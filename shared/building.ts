@@ -36,15 +36,37 @@ export function roomAt(locationId: LocationId, building: Building, floor = 0): L
   const loc = locationById(locationId);
   const w = loc.w + building.w;
   const first = building.shafts[0]?.landing;
-  const groundDoor = loc.door.i === loc.w - 1 ? { i: w - 1, j: loc.door.j } : loc.door;
+  // Die Tür bleibt in der Wand zur Strasse: Baut man nach vorn an, wandert sie mit.
+  const groundDoor = { i: loc.door.i, j: loc.door.j + building.d };
   return { ...loc, w, d: loc.d + building.d, door: floor > 0 && first ? first : groundDoor, keep: building.shafts.map((s) => s.landing) };
 }
 
-export const roomOf = (company: Pick<Company, 'locationId' | 'town'>, floor = 0) => roomAt(company.locationId, buildingAt(company.town, company.town.siteId), floor);
+/** Jeder Standort hat seinen eigenen Bereich an Etagen: 0 bis 99 der Firmensitz, ab 100 der erste weitere und so fort. */
+export const SITE_STEP = 100;
+export const storeyOf = (floor: number) => floor % SITE_STEP;
+export const siteBase = (floor: number) => floor - storeyOf(floor);
+
+/** Welcher Standort zu einer Etage gehört. */
+export function siteAt(company: Pick<Company, 'locationId' | 'town'>, floor = 0): { siteId: string; locationId: LocationId } {
+  const extra = floor >= SITE_STEP ? company.town.extra?.[Math.floor(floor / SITE_STEP) - 1] : null;
+  return extra ?? { siteId: company.town.siteId, locationId: company.locationId };
+}
+
+/** Das Erdgeschoss eines Standorts, oder null, wenn die Firma dort noch nicht arbeitet. */
+export function baseFloorOf(company: Pick<Company, 'town'>, siteId: string): number | null {
+  if (company.town.siteId === siteId) return 0;
+  const index = company.town.extra?.findIndex((s) => s.siteId === siteId) ?? -1;
+  return index < 0 ? null : (index + 1) * SITE_STEP;
+}
+
+export function roomOf(company: Pick<Company, 'locationId' | 'town'>, floor = 0): LocationInfo {
+  const site = siteAt(company, floor);
+  return roomAt(site.locationId, buildingAt(company.town, site.siteId), storeyOf(floor));
+}
 
 export const floorOf = (item: { floor?: number }) => item.floor ?? 0;
 export const itemsOnFloor = (items: PlacedItem[], floor: number) => items.filter((p) => floorOf(p) === floor);
-export const floorName = (floor: number) => (floor === 0 ? 'EG' : `${floor}. OG`);
+export const floorName = (floor: number) => (floor % 100 === 0 ? 'EG' : `${floor % 100}. OG`);
 
 /** Das Feld vor einem Aufgang. Die Drehung wählt die Seite. */
 export function shaftLanding(kind: Shaft['kind'], i: number, j: number, rot: Rotation): Tile {

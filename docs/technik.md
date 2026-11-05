@@ -197,7 +197,11 @@ Neue Mitarbeiter gehen nach dem Vorstellungsgespräch zu jedem Kollegen und erfa
 
 ## Das Büro in der Stadt
 
-Hinaus geht es per Klick auf die Tür: Die Figur läuft hin und steht dann in der Stadt. Rund ums Büro liegt die echte Stadt, ausgerichtet auf das Grundstück der Firma, mit den Häusern und Bäumen, die dort stehen.
+Die Haustür liegt in der Wand zur Strasse, ein Weg führt zum Gehweg. Ein Klick auf die Tür lässt die Figur hinlaufen, dann steht sie in der Stadt. Zurück führt ein Klick auf die Tür des eigenen Hauses. Rund ums Büro liegt die echte Stadt, ausgerichtet auf das Grundstück der Firma. Das eigene Grundstück ist so scharf wie das Büro; Nachbarhäuser davor werden nach dem Büro gezeichnet und verdecken es, wo sie wirklich davor stehen.
+
+## Mehrere Standorte
+
+Die Tür jedes Hauses, das der Firma gehört oder das sie gemietet hat, führt hinein, ohne dass sie umzieht. Das Haus wird dann ein weiterer Standort mit eigenen Möbeln, Abteilungen und Arbeitsplätzen. Wer dort eingestellt wird, sitzt auch dort. Budget, Verbrauch, Teams, Tafel und Akten gelten für die ganze Firma. Technisch hat jeder Standort einen eigenen Bereich an Etagen: 0 bis 99 der Firmensitz, ab 100 der nächste. Anbauen geht vorerst nur am Firmensitz.
 
 ## Tastenkürzel
 

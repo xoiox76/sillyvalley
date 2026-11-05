@@ -4,7 +4,7 @@ import { marked } from 'marked';
 import { DEFAULT_CEO, LOOK_OPTIONS, NAME_IDEAS, ROLES, RULES, isProp, roleById, setExtraModels } from '../../shared/catalog.ts';
 import { checkDepartment, checkPlacement, rectFromCorners, type Tile } from '../../shared/layout.ts';
 import { ROLE_TEMPLATE, parseRole, roleToMarkdown, withRoleColor } from '../../shared/roleMarkdown.ts';
-import { buildingAt, checkShaft, floorOf, isShaft, itemsOnFloor, roomOf } from '../../shared/building.ts';
+import { siteAt, siteBase, storeyOf, buildingAt, checkShaft, floorOf, isShaft, itemsOnFloor, roomOf } from '../../shared/building.ts';
 import type { Agent, BoardItem, FurnitureKind, ProjectAgent, LocationId, Look, PlacedItem, Rotation, Snapshot } from '../../shared/types.ts';
 import { parcelById } from '../../shared/town.ts';
 import { TownView } from '../world/town.ts';
@@ -210,6 +210,13 @@ export function renderGame(root: HTMLElement, companyId: string, onLeave: () => 
       parcelId = id;
       render();
     },
+    onEnter(parcelId) {
+      api.enterSite(companyId, parcelId).then(({ floor, snapshot }) => {
+        onSnapshot(snapshot);
+        viewFloor = floor;
+        goInside();
+      }).catch(fail);
+    },
     keyboardBlocked() {
       const active = document.activeElement as HTMLElement | null;
       return modal !== null || build !== null || Boolean(active?.closest('input, textarea, select'));
@@ -223,7 +230,7 @@ export function renderGame(root: HTMLElement, companyId: string, onLeave: () => 
     syncGhost();
     world.setActive(false);
     render();
-    town.enter();
+    town.enter(snap ? siteAt(snap.company, viewFloor).siteId : undefined);
     // Die Schilder der anderen Firmen. Fehlt die Liste, bleibt wenigstens das eigene.
     api.companies().then((firms) => town.setNeighbors(firms.filter((f) => f.siteId))).catch(() => undefined);
   }
@@ -234,7 +241,7 @@ export function renderGame(root: HTMLElement, companyId: string, onLeave: () => 
     town.setActive(false);
     world.setActive(true);
     // Du kommst unten durch die Tür herein.
-    showFloor(0);
+    showFloor(siteBase(viewFloor));
     render();
   }
 
@@ -278,10 +285,11 @@ export function renderGame(root: HTMLElement, companyId: string, onLeave: () => 
   /** Wechselt die sichtbare Etage. Die Figuren arbeiten überall weiter. */
   function changeFloor(step: number, wrap = false): void {
     if (!snap) return;
-    const floors = buildingAt(snap.company.town, snap.company.town.siteId).floors;
+    const floors = buildingAt(snap.company.town, siteAt(snap.company, viewFloor).siteId).floors;
     if (floors < 2) return;
-    const next = wrap ? (viewFloor + step + floors) % floors : Math.max(0, Math.min(floors - 1, viewFloor + step));
-    showFloor(next);
+    const storey = storeyOf(viewFloor);
+    const next = wrap ? (storey + step + floors) % floors : Math.max(0, Math.min(floors - 1, storey + step));
+    showFloor(siteBase(viewFloor) + next);
   }
 
   function showFloor(floor: number): void {
@@ -291,6 +299,14 @@ export function renderGame(root: HTMLElement, companyId: string, onLeave: () => 
     if (build) build.tile = null;
     syncGhost();
     render();
+  }
+
+  /** Wer hier eingestellt wird, sitzt auch hier, wenn es einen freien Platz gibt. */
+  function freeDeskHere(): string | undefined {
+    if (!snap) return undefined;
+    const taken = new Set(snap.company.agents.map((a) => a.deskId));
+    const base = siteBase(viewFloor);
+    return snap.company.placed.find((p) => p.kind === 'desk' && !taken.has(p.id) && siteBase(floorOf(p)) === base)?.id;
   }
 
   /** Die Mitarbeiterakten am Laptop. */
@@ -1275,9 +1291,6 @@ export function renderGame(root: HTMLElement, companyId: string, onLeave: () => 
       }
       render();
     },
-    'go-inside'() {
-      goInside();
-    },
     async 'town-action'(el) {
       try {
         await api.townAction(companyId, el.dataset.id!, { action: el.dataset.town, locationId: el.dataset.location as LocationId | undefined });
@@ -1349,7 +1362,7 @@ export function renderGame(root: HTMLElement, companyId: string, onLeave: () => 
       try {
         const name = String(data.get('name') ?? '');
         await api.hire(companyId, {
-          name, roleId: draft.roleId, companyRoleId: draft.companyRoleId, skillIds: draft.skillIds, modelId: draft.modelId, look: { ...draft.look, top: roleById(draft.roleId)!.top }, deskId: draft.deskId,
+          name, roleId: draft.roleId, companyRoleId: draft.companyRoleId, skillIds: draft.skillIds, modelId: draft.modelId, look: { ...draft.look, top: roleById(draft.roleId)!.top }, deskId: draft.deskId ?? freeDeskHere(),
           job: { title: data.get('jobTitle'), task: data.get('jobTask'), requirements: data.get('jobRequirements') },
           customSkills: draft.customSkills.map(({ title, instruction, source }) => ({ title, instruction, source })),
         });
@@ -1758,7 +1771,7 @@ export function renderGame(root: HTMLElement, companyId: string, onLeave: () => 
     els.world.hidden = outside;
     els.town.hidden = !outside;
     const parcel = parcelId ? parcelById(parcelId) ?? null : null;
-    morph(els.overlay, html`${outside ? townChips(snap) : roomChips(snap, viewFloor, ceoSeated)}${outside ? townCard(snap, parcel) : null}${disconnected ? html`<div class="stale" role="alert">Keine Verbindung zum Server.</div>` : null}`);
+    morph(els.overlay, html`${outside ? townChips() : roomChips(snap, viewFloor, ceoSeated)}${outside ? townCard(snap, parcel) : null}${disconnected ? html`<div class="stale" role="alert">Keine Verbindung zum Server.</div>` : null}`);
     root.querySelectorAll<HTMLElement>('.tab').forEach((button) => {
       const on = button.dataset.id === tab;
       button.classList.toggle('active', on);
@@ -1773,7 +1786,7 @@ export function renderGame(root: HTMLElement, companyId: string, onLeave: () => 
     else if (tab === 'team') panel = teamPanel(snap, selectedAgent, selectedDepartment);
     else if (tab === 'projekte') panel = projectsPanel(snap, selectedOrder, selectedMandate, files, folds, selectedNote);
     else if (tab === 'finanzen') panel = financePanel(snap);
-    else if (tab === 'bauen') panel = buildPanel(snap, build?.kind ?? null, Boolean(build?.id), buildMessage, build?.kind === 'department' && build.anchor !== null, build?.inventoryId ?? null, confirmDelete);
+    else if (tab === 'bauen') panel = buildPanel(snap, build?.kind ?? null, Boolean(build?.id), buildMessage, build?.kind === 'department' && build.anchor !== null, build?.inventoryId ?? null, confirmDelete, viewFloor < 100);
     if (panel) morph(els.panel, panel);
     // Eine neue Antwort soll sichtbar sein, ohne dass man erst danach suchen muss.
     const chatLength = snap.company.agents.find((a) => a.id === selectedAgent)?.chat.length ?? 0;

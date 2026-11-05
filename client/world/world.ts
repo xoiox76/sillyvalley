@@ -4,8 +4,9 @@
 import { DEFAULT_CEO, LOCATIONS, isProp, locationById, staffOf } from '../../shared/catalog.ts';
 import { withoutEszett } from '../ui/html.ts';
 import { noteEdge, noteLook } from '../../shared/board.ts';
-import { townBackdrop } from './town.ts';
-import { buildingAt, checkShaft, floorOf, isShaft, itemsOnFloor, roomOf, shaftLanding } from '../../shared/building.ts';
+import { plotGap, townBackdrop } from './town.ts';
+import { parcelById } from '../../shared/town.ts';
+import { siteAt, siteBase, storeyOf, buildingAt, checkShaft, floorOf, isShaft, itemsOnFloor, roomOf, shaftLanding } from '../../shared/building.ts';
 import { noteTaker, wallNotes, type BoardNote } from '../../shared/board.ts';
 import {
   blockedEdges, blockedSet, checkDepartment, checkPlacement, findPath, footprint, inBounds, meetingDoor, meetingSeats, occupiedTiles, seatOf, standingTile,
@@ -15,7 +16,7 @@ import type { Agent, Company, Department, FurnitureKind, HelpRequest, PropKind, 
 import { ROOM_HEIGHT, drawLiftDoors, drawLiftFrame, liftShell, type LiftFace, chairBack, chairBase, ceoTable, deskTable, drawScreen, furnitureSprite, glassSegment, meetingFloor, meetingTable, propSprite, type Sprite } from './art.ts';
 import { characterSprite, type Pose, type View } from './characters.ts';
 import { Pen, fillPoly, layer, line, rect, type Ctx, type Layer } from './pixel.ts';
-import { buildRoom, waterPattern, type Room } from './room.ts';
+import { buildRoom, waterPattern, type Room, WALL_H } from './room.ts';
 
 const MOBILE_STATES: LiveKind[] = ['idle', 'done', 'stopped', 'handoff', 'meeting'];
 const WORKING: LiveKind[] = ['starting', 'thinking', 'answering', 'reading', 'writing', 'searching', 'waiting'];
@@ -67,7 +68,7 @@ interface Actor {
   lastScreen: { x: number; y: number };
   floor: number;
   /** Unterwegs über Treppe oder Fahrstuhl: Wohin es nach dem Etagenwechsel geht. */
-  transit: { floor: number; target: Tile; landing: Tile; lift: LiftTrip | null } | null;
+  transit: { floor: number; target: Tile; landing: Tile; lift: LiftTrip | null; crossing?: boolean } | null;
   /** In der geschlossenen Kabine ist die Figur nicht zu sehen. */
   hidden: boolean;
 }
@@ -456,8 +457,8 @@ export class World {
 
   private useRoom(): void {
     const loc = roomOf(this.company!, this.viewFloor);
-    const key = `${loc.id}:${loc.w}x${loc.d}:${this.viewFloor > 0 ? 'oben' : 'unten'}`;
-    if (!this.rooms.has(key)) this.rooms.set(key, buildRoom(loc, this.viewFloor));
+    const key = `${loc.id}:${loc.w}x${loc.d}:${storeyOf(this.viewFloor) > 0 ? 'oben' : 'unten'}`;
+    if (!this.rooms.has(key)) this.rooms.set(key, buildRoom(loc, storeyOf(this.viewFloor), true));
     const next = this.rooms.get(key)!;
     const resized = this.room && (this.room.width !== next.width || this.room.height !== next.height);
     this.room = next;
@@ -679,7 +680,7 @@ export class World {
 
   /** Das Möbelstück unter dem Zeiger. Ein Regal ist hoch: Getroffen wird das ganze Bild, nicht nur sein Bodenfeld. */
   private boardAt(x: number, y: number): boolean {
-    if (!this.room || this.viewFloor > 0) return false;
+    if (!this.room || storeyOf(this.viewFloor) > 0) return false;
     const b = this.room.board;
     const [ox, oy] = this.room.pen.pt(0, 0);
     const u = x - this.offX - ox;
@@ -690,9 +691,10 @@ export class World {
 
   /** Die Türen hängen an der Wand, deshalb zählt hier die Stelle im Bild, nicht das Feld. */
   private doorAt(x: number, y: number): boolean {
-    if (!this.room || this.viewFloor > 0) return false;
-    const [ox, oy] = this.room.pen.pt(0, 0);
+    if (!this.room || storeyOf(this.viewFloor) > 0) return false;
+    const { pen } = this.room;
     return this.room.doors.some((door) => {
+      const [ox, oy] = pen.pt(0, door.j);
       const u = door.face === 'J' ? x - this.offX - ox : this.offX + ox - x;
       if (u < door.u || u >= door.u + door.w) return false;
       const up = oy + this.offY + Math.floor(u / 2) - y;
@@ -845,6 +847,12 @@ export class World {
       const loc = this.location();
       // Der nächste Aufgang gewinnt.
       const landing = [...(loc.keep ?? [])].sort((a, b) => Math.hypot(a.i - from.i, a.j - from.j) - Math.hypot(b.i - from.i, b.j - from.j))[0];
+      // In ein anderes Haus geht es zur Haustür hinaus und dort zur Tür herein.
+      if (floor !== actor.floor && siteBase(floor) !== siteBase(actor.floor)) {
+        actor.transit = { floor, target, landing: loc.door, lift: null, crossing: true };
+        actor.path = findPath(loc, this.blocked, from, loc.door, this.edges);
+        return;
+      }
       if (floor !== actor.floor && landing) {
         const shaft = buildingAt(this.company!.town, this.company!.town.siteId).shafts.find((s) => s.kind === 'lift' && s.landing.i === landing.i && s.landing.j === landing.j);
         actor.transit = { floor, target, landing, lift: shaft ? { shaft, phase: 'walk', at: 0 } : null };
@@ -1151,7 +1159,8 @@ export class World {
         actor.pose = 'stand';
         return;
       }
-      const { floor, target, landing } = actor.transit;
+      const { floor, target, crossing } = actor.transit;
+      const landing = crossing ? roomOf(this.company!, floor).door : actor.transit.landing;
       actor.transit = null;
       actor.floor = floor;
       this.ctxFloor = floor;
@@ -1345,7 +1354,7 @@ export class World {
       el.remove();
       this.zoneLabels.delete(id);
     }
-    if (this.viewFloor === 0) this.drawBoard(pen);
+    if (storeyOf(this.viewFloor) === 0) this.drawBoard(pen);
 
     const items: { depth: number; draw: () => void }[] = [];
 
@@ -1410,6 +1419,23 @@ export class World {
     items.sort((a, b) => a.depth - b.depth);
     for (const item of items) item.draw();
     ctx.drawImage(room.front.canvas, this.offX, this.offY);
+    // Nachbarhäuser vor dem Grundstück stehen auch vor dem Büro.
+    const surroundings = this.backdrop();
+    if (surroundings) {
+      // Sie enden am Umriss des Hauses: Was im Büro geschieht, muss immer zu sehen sein.
+      const ground = roomOf(company, siteBase(this.viewFloor));
+      const edge = 0.3;
+      const height = WALL_H + 8;
+      const outline = [pen.pt(-edge, -edge, height), pen.pt(ground.w + edge, -edge, height), pen.pt(ground.w + edge, -edge), pen.pt(ground.w + edge, ground.d + edge), pen.pt(-edge, ground.d + edge), pen.pt(-edge, ground.d + edge, height)];
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(0, 0, this.lowW, this.lowH);
+      outline.forEach(([x, y], index) => (index ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
+      ctx.closePath();
+      ctx.clip('evenodd');
+      this.blitTown(ctx, pen, surroundings.front.canvas, surroundings.x, surroundings.y, surroundings.zoom, ground.w, ground.d);
+      ctx.restore();
+    }
 
     if (this.ghost) this.drawGhost(ctx, pen, this.ghost, tick);
 
@@ -1604,24 +1630,37 @@ export class World {
     line(ctx, sx, sy + 4, sx - 9, sy, '#5eeac0');
   }
 
+  private backdrop() {
+    const ground = roomOf(this.company!, siteBase(this.viewFloor));
+    return townBackdrop(this.company!, siteAt(this.company!, this.viewFloor).siteId, ground.w, ground.d, ground.door.i);
+  }
+
+  /** Zeichnet den sichtbaren Teil. Die ganze Stadt in jedem Bild zu vergrössern, wäre zu teuer. */
+  private blitTown(ctx: Ctx, pen: Pen, source: HTMLCanvasElement, x: number, y: number, zoom: number, w: number, d: number): void {
+    const site = parcelById(siteAt(this.company!, this.viewFloor).siteId)!;
+    const [cx, cy] = pen.pt(w / 2, d + plotGap(site, d, zoom));
+    const left = cx - x * zoom;
+    const top = cy - y * zoom;
+    const sx = Math.max(0, Math.floor(-left / zoom));
+    const sy = Math.max(0, Math.floor(-top / zoom));
+    const sw = Math.min(source.width - sx, Math.ceil(this.lowW / zoom) + 2);
+    const sh = Math.min(source.height - sy, Math.ceil(this.lowH / zoom) + 2);
+    if (sw <= 0 || sh <= 0) return;
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(source, sx, sy, sw, sh, left + sx * zoom, top + sy * zoom, sw * zoom, sh * zoom);
+  }
+
   /** Rund ums Büro liegt die echte Stadt, ausgerichtet auf das eigene Grundstück. Sie ist abgedunkelt, damit das Büro vorn bleibt. */
   private drawSurroundings(ctx: Ctx, pen: Pen): void {
     const loc = this.location();
-    const backdrop = townBackdrop(this.company!, loc.w, loc.d);
+    const backdrop = this.backdrop();
     if (!backdrop) return;
     const { image, zoom } = backdrop;
-    const [cx, cy] = pen.pt(loc.w / 2, loc.d / 2);
-    const left = cx - backdrop.x * zoom;
-    const top = cy - backdrop.y * zoom;
-    // Nur der sichtbare Teil: Die ganze Stadt in jedem Bild zu vergrössern, wäre zu teuer.
-    const sx = Math.max(0, Math.floor(-left / zoom));
-    const sy = Math.max(0, Math.floor(-top / zoom));
-    const sw = Math.min(image.canvas.width - sx, Math.ceil(this.lowW / zoom) + 2);
-    const sh = Math.min(image.canvas.height - sy, Math.ceil(this.lowH / zoom) + 2);
-    if (sw <= 0 || sh <= 0) return;
-    ctx.imageSmoothingEnabled = false;
-    ctx.drawImage(image.canvas, sx, sy, sw, sh, left + sx * zoom, top + sy * zoom, sw * zoom, sh * zoom);
-    rect(ctx, 0, 0, this.lowW, this.lowH, 'rgba(12, 22, 38, .28)');
+    this.blitTown(ctx, pen, image.canvas, backdrop.x, backdrop.y, zoom, loc.w, loc.d);
+    rect(ctx, 0, 0, this.lowW, this.lowH, 'rgba(12, 22, 38, .16)');
+    // Das eigene Grundstück bleibt hell und scharf, es gehört zum Haus.
+    const [ox, oy] = pen.pt(0, 0);
+    ctx.drawImage(backdrop.plot.image.canvas, ox - backdrop.plot.ox, oy - backdrop.plot.oy);
   }
 
   /** Eine Zettelfarbe je echtem Auftrag. So zeigt auch der Raum den Stand der Firma. */

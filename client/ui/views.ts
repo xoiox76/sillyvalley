@@ -10,9 +10,9 @@ import { colorInText } from '../../shared/roleMarkdown.ts';
 import { ROADMAP_PHASES, roadmapRows } from '../../shared/roadmap.ts';
 import { CONNECTION_KINDS, OPENAI_PRICES_AS_OF, connectionKind } from '../../shared/providers.ts';
 import { SPRINT_COLUMNS, openSprint, scrumMaster, sprintCommitted, sprintRows } from '../../shared/scrum.ts';
-import { EXTEND_COST, SHAFT_COST, buildLimits, buildingAt, floorCost, floorName, floorOf, isShaft, roomAt, roomOf } from '../../shared/building.ts';
+import { baseFloorOf, siteAt, siteBase, EXTEND_COST, SHAFT_COST, buildLimits, buildingAt, floorCost, floorName, floorOf, isShaft, roomAt, roomOf } from '../../shared/building.ts';
 import type { Agent, BoardItem, CommandRequest, Company, CompanyRole, Contract, CustomSkill, Department, LiveKind, Look, Mandate, Meeting, Order, Pool, ProjectAgent, Proposal, Run, Snapshot, Sprint, Stage, StageKind, Team } from '../../shared/types.ts';
-import { HOME_ROOMS, TOWN_NAME, parcelById, type Parcel } from '../../shared/town.ts';
+import { HOME_ROOMS, type Parcel } from '../../shared/town.ts';
 import { portraitUrl } from '../world/characters.ts';
 import type { FileEntry } from './api.ts';
 import { api } from './api.ts';
@@ -2167,7 +2167,7 @@ function buildingSection(s: Snapshot): Safe {
   </section>`;
 }
 
-export function buildPanel(s: Snapshot, buildKind: string | null, moving: boolean, message: string, anchored: boolean, inventoryId: string | null = null, confirmDelete: string | null = null): Safe {
+export function buildPanel(s: Snapshot, buildKind: string | null, moving: boolean, message: string, anchored: boolean, inventoryId: string | null = null, confirmDelete: string | null = null, atHead = true): Safe {
   const fromInventory = Boolean(inventoryId);
   const deletable = moving || fromInventory;
   const { company } = s;
@@ -2219,7 +2219,7 @@ export function buildPanel(s: Snapshot, buildKind: string | null, moving: boolea
           <span class="catalog-name"><strong>Abteilung</strong><small>Ein Bereich mit eigenem Team, Budget und Wissen.</small></span><span class="num">${RULES.departmentCost}</span>
         </button></li>
     </ul>
-    ${buildingSection(s)}
+    ${atHead ? buildingSection(s) : html`<p class="hint" data-key="anbau-hinweis">Anbauen geht vorerst nur am Firmensitz.</p>`}
     ${company.departments.length ? html`<section class="detail" data-key="zones">
       <h3>Abteilungen</h3>
       <ul class="dept-list">${company.departments.map((d) => html`<li data-key="${d.id}">
@@ -2283,15 +2283,16 @@ export function liveNote(s: Snapshot, disconnected: boolean): Safe {
 }
 
 export function roomChips(s: Snapshot, viewFloor = 0, ceoSeated = false): Safe {
-  const loc = roomOf(s.company);
-  const building = buildingAt(s.company.town, s.company.town.siteId);
+  const loc = roomOf(s.company, viewFloor);
+  const building = buildingAt(s.company.town, siteAt(s.company, viewFloor).siteId);
+  const base = siteBase(viewFloor);
   const pending = s.company.mandates.reduce((sum, m) => sum + m.proposals.filter((p) => p.status === 'pending').length + m.contracts.filter((c) => c.status === 'pending').length, 0);
   const commands = s.company.commands.filter((c) => c.status === 'pending').length;
   return html`<div class="chip-room">${loc.title} · ${loc.w} × ${loc.d} Felder${s.company.departments.length ? ` · ${s.company.departments.length === 1 ? '1 Abteilung' : `${s.company.departments.length} Abteilungen`}` : ''}</div>
     ${pending ? html`<div class="chip-room chip-pending">${pending === 1 ? 'Ein Vorschlag wartet' : `${pending} Vorschläge warten`} auf deine Freigabe</div>` : null}
     ${commands ? html`<button class="btn btn-door btn-attention" data-action="tab-team">${commands === 1 ? 'Ein Befehl wartet' : `${commands} Befehle warten`} auf deine Freigabe</button>` : null}
     ${building.floors > 1 ? html`<div class="floor-switch" role="group" aria-label="Etage">
-      ${Array.from({ length: building.floors }, (_, floor) => {
+      ${Array.from({ length: building.floors }, (_, storey) => base + storey).map((floor) => {
         const people = s.company.agents.filter((a) => !a.firedAt && floorOf(s.company.placed.find((p) => p.id === a.deskId) ?? {}) === floor).length;
         return html`<button class="btn btn-door ${floor === viewFloor ? 'on' : ''}" aria-pressed="${floor === viewFloor}" data-action="set-floor" data-id="${floor}" data-key="${floor}" title="Bild auf und Bild ab wechseln die Etage">${floorName(floor)}${people ? ` · ${people}` : ''}</button>`;
       })}
@@ -2302,11 +2303,8 @@ export function roomChips(s: Snapshot, viewFloor = 0, ceoSeated = false): Safe {
 
 /* ---------- Stadt ---------- */
 
-export function townChips(s: Snapshot): Safe {
-  const site = parcelById(s.company.town.siteId);
-  return html`<div class="chip-room">${TOWN_NAME} · Baupunkte: <span class="num">${s.system.unlimitedBuild ? '∞' : s.company.buildPoints}</span></div>
-    <button class="btn btn-door" data-action="go-inside">Zurück ins Büro${site ? html` <small>(${site.name})</small>` : null}</button>
-    <div class="chip-seats">Klicke auf die Stadt oder laufe mit den Pfeiltasten</div>`;
+export function townChips(): Safe {
+  return html`<div class="chip-seats">Klicke auf die Stadt oder laufe mit den Pfeiltasten. Die Tür deines Hauses führt hinein.</div>`;
 }
 
 /** Was man hier tun kann, erscheint erst, wenn die Figur davor steht. */
@@ -2315,33 +2313,35 @@ export function townCard(s: Snapshot, parcel: Parcel | null): Safe | null {
   const { company, system } = s;
   const { town } = company;
   const here = town.siteId === parcel.id;
+  // Ins eigene Haus führt die Tür. Einen Dialog braucht es nur, wenn es hier noch etwas zu entscheiden gibt.
+  const held = baseFloorOf(company, parcel.id) !== null;
+  if (held && parcel.kind !== 'home') return null;
   const can = (cost: number) => system.unlimitedBuild || company.buildPoints >= cost;
   const room = parcel.locationId ? roomAt(parcel.locationId, buildingAt(town, parcel.id)) : null;
   const size = room ? `${room.w} × ${room.d} Felder` : '';
   const action = (kind: string, label: string, cost: number, primary = true, locationId?: string) => html`<button class="btn btn-small ${primary ? 'btn-primary' : ''}" data-action="town-action" data-town="${kind}" data-id="${parcel.id}" ${locationId ? html`data-location="${locationId}"` : ''} ${can(cost) ? '' : 'disabled'}>${label}</button>`;
-  const inside = html`<button class="btn btn-small btn-primary" data-action="go-inside">Hineingehen</button>`;
   let facts: Safe | null = null;
   let buttons: Safe | null = null;
   if (parcel.kind === 'home') {
     const rooms = HOME_ROOMS.filter((id) => id !== company.locationId);
-    buttons = html`${here ? inside : null}${rooms.map((id) => action('move', `In ${id === 'garage' ? 'die Garage' : 'das Kinderzimmer'} ziehen`, 0, !here, id))}`;
+    buttons = html`${rooms.map((id) => action('move', `In ${id === 'garage' ? 'die Garage' : 'das Kinderzimmer'} ziehen`, 0, !here, id))}`;
     facts = here ? html`<p class="hint">Hier sitzt deine Firma: ${locationById(company.locationId).title}.</p>` : html`<p class="hint">Kostenlos.</p>`;
   } else if (parcel.kind === 'vacant') {
     const rented = town.rented.includes(parcel.id);
-    facts = html`<p class="hint">${size}.${rented ? ' Du hast den Mietvertrag.' : html` Miete: <span class="num">${parcel.price}</span> Baupunkte.`}</p>`;
-    buttons = here ? inside : rented ? action('move', 'Einziehen', 0) : action('rent', `Anmieten für ${parcel.price} Baupunkte`, parcel.price ?? 0);
+    facts = html`<p class="hint">${size}.${rented ? ' Du hast den Mietvertrag. Die Tür führt hinein, ohne dass die Firma umzieht.' : html` Miete: <span class="num">${parcel.price}</span> Baupunkte.`}</p>`;
+    buttons = rented ? action('move', 'Firmensitz hierher verlegen', 0, false) : action('rent', `Anmieten für ${parcel.price} Baupunkte`, parcel.price ?? 0);
   } else if (parcel.kind === 'lot') {
     const owned = town.owned.includes(parcel.id);
     const built = town.built.includes(parcel.id);
-    facts = html`<p class="hint">${built ? `Dein Neubau: ${size}.` : owned ? `Dein Grundstück. Bau: ${size}, ${parcel.buildCost} Baupunkte.` : `Kaufpreis: ${parcel.price} Baupunkte. Später möglich: Neubau mit ${size} für ${parcel.buildCost} Baupunkte.`}</p>`;
-    buttons = here ? inside : built ? action('move', 'Einziehen', 0) : owned ? action('build', `Bauen für ${parcel.buildCost} Baupunkte`, parcel.buildCost ?? 0) : action('buy', `Kaufen für ${parcel.price} Baupunkte`, parcel.price ?? 0);
+    facts = html`<p class="hint">${built ? `Dein Neubau: ${size}. Die Tür führt hinein, ohne dass die Firma umzieht.` : owned ? `Dein Grundstück. Bau: ${size}, ${parcel.buildCost} Baupunkte.` : `Kaufpreis: ${parcel.price} Baupunkte. Später möglich: Neubau mit ${size} für ${parcel.buildCost} Baupunkte.`}</p>`;
+    buttons = built ? action('move', 'Firmensitz hierher verlegen', 0, false) : owned ? action('build', `Bauen für ${parcel.buildCost} Baupunkte`, parcel.buildCost ?? 0) : action('buy', `Kaufen für ${parcel.price} Baupunkte`, parcel.price ?? 0);
   }
   return html`<section class="town-card" aria-live="polite" data-key="${parcel.id}">
     <h2>${parcel.name}</h2>
     <small>${parcel.street}${parcel.kind === 'shop' ? ', geöffnet' : ''}</small>
     ${facts}
     ${buttons ? html`<div class="btn-row">${buttons}</div>` : null}
-    ${parcel.kind === 'vacant' || parcel.kind === 'lot' ? html`<p class="hint">Bezahlt wird in Baupunkten, nicht aus dem KI-Budget.</p>` : null}
+    ${parcel.kind === 'vacant' || parcel.kind === 'lot' ? html`<p class="hint">Bezahlt wird in Baupunkten, nicht aus dem KI-Budget. Du hast <span class="num">${system.unlimitedBuild ? '∞' : company.buildPoints}</span>.</p>` : null}
   </section>`;
 }
 

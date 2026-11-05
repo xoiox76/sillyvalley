@@ -20,7 +20,7 @@ export interface Room {
   /** Pinnwand auf der hinteren rechten Wand. u, v in Pixel. */
   board: { u: number; v: number; w: number; h: number };
   /** Wo man hinausgeht. u in Pixel entlang der Wand. Die Welt prüft darauf Klicks. */
-  doors: { face: 'J' | 'I'; u: number; w: number; h: number }[];
+  doors: { face: 'J' | 'I'; j: number; u: number; w: number; h: number }[];
 }
 
 interface Theme {
@@ -199,9 +199,9 @@ function drawPoster(pen: Pen, face: 'J' | 'I', u: number, v: number, w: number, 
   }
 }
 
-function drawDoor(pen: Pen, face: 'J' | 'I', u: number): void {
-  const put = (a: number, b: number, c: number, d: number, color: string) =>
-    face === 'J' ? pen.faceJ(0, 0, 0, a, b, c, d, color) : pen.faceI(0, 0, 0, a, b, c, d, color);
+/** Die Haustür in der vorderen Wand. Sie überragt die niedrige Schnittkante, damit man sie von aussen erkennt. */
+function drawDoor(pen: Pen, j: number, u: number): void {
+  const put = (a: number, b: number, c: number, d: number, color: string) => pen.faceJ(0, j, 0, a, b, c, d, color);
   put(u - 2, 0, 17, 40, '#e6e4da');
   put(u - 1, 0, 15, 38, '#141b2a');
   put(u, 0, 13, 37, '#2a3550');
@@ -246,7 +246,8 @@ function sunlight(id: LocationId, i: number, j: number): number {
   return 0;
 }
 
-export function buildRoom(loc: LocationInfo, level = 0): Room {
+/** grounded: Das Haus steht auf seinem Grundstück in der Stadt, ebenerdig und ohne eigene Insel. */
+export function buildRoom(loc: LocationInfo, level = 0, grounded = false): Room {
   const theme = THEMES[loc.id];
   const { w: W, d: D } = loc;
   const width = (W + D) * 16 + MARGIN * 2;
@@ -262,12 +263,14 @@ export function buildRoom(loc: LocationInfo, level = 0): Room {
   const pad = 0.95;
   const island = [pen.pt(-pad, -pad), pen.pt(W + pad, -pad), pen.pt(W + pad, D + pad), pen.pt(-pad, D + pad)] as const;
   const skirt = island.map(([x, y]) => [x, y + 10] as const);
-  fillPoly(ctx, [skirt[1], skirt[2], skirt[3], island[3], island[2], island[1]], '#3c3a35');
-  fillPoly(ctx, [island[3], island[2], skirt[2], skirt[3]], '#4a463f');
-  fillPoly(ctx, island, '#3f7d48');
+  if (!grounded) {
+    fillPoly(ctx, [skirt[1], skirt[2], skirt[3], island[3], island[2], island[1]], '#3c3a35');
+    fillPoly(ctx, [island[3], island[2], skirt[2], skirt[3]], '#4a463f');
+    fillPoly(ctx, island, '#3f7d48');
+  }
   const random = seeded(loc.id.length * 991);
   const [minX, maxX] = [island[3][0], island[1][0]];
-  for (let n = 0; n < (W + D) * 90; n++) {
+  for (let n = 0; n < (grounded ? 0 : (W + D) * 90); n++) {
     const x = minX + random() * (maxX - minX);
     const y = random() * height;
     const ii = ((x - ox) / 16 + (y - oy) / 8) / 2;
@@ -277,7 +280,7 @@ export function buildRoom(loc: LocationInfo, level = 0): Room {
   }
   // Büsche an den Vorderkanten
   const bushes = ['#2c6a3d', '#3a8549', '#57a65e'];
-  for (let n = 0; n < (W + D) * 1.7; n++) {
+  for (let n = 0; n < (grounded ? 0 : (W + D) * 1.7); n++) {
     const along = random();
     const onLeft = random() > 0.5;
     const [bx, by] = onLeft ? pen.pt(-0.5 + along * (W + 1), D + 0.62) : pen.pt(W + 0.62, -0.5 + along * (D + 1));
@@ -348,10 +351,6 @@ export function buildRoom(loc: LocationInfo, level = 0): Room {
 
   // Wanddeko und Türen
   const doors: Room['doors'] = [];
-  const addDoor = (u: number) => {
-    drawDoor(pen, 'J', u);
-    doors.push({ face: 'J', u: u - 2, w: 17, h: 40 });
-  };
   if (loc.id === 'kinderzimmer') {
     drawWindow(pen, 'I', 62, 22, 22, 18);
     drawPoster(pen, 'I', 40, 22, 12, 16, ['#e5534b', '#f8b62d', '#3f7fd0']);
@@ -359,12 +358,10 @@ export function buildRoom(loc: LocationInfo, level = 0): Room {
     for (const [u, v] of [[8, 46], [20, 40], [90, 44]]) {
       pen.faceI(0, 0, 0, u % 92, v, 2, 2, '#f8e27a');
     }
-    if (level === 0) addDoor(W * 16 - 14);
   } else if (loc.id === 'garage') {
     drawRollerDoor(pen, 44, 46);
-    if (level === 0) doors.push({ face: 'I', u: 42, w: 50, h: 42 });
+    if (level === 0) doors.push({ face: 'I', j: 0, u: 42, w: 50, h: 42 });
     drawWindow(pen, 'J', 56, 26, 24, 13);
-    addDoor(96);
   } else {
     drawWindow(pen, 'I', 28, 24, 30, 18);
     drawWindow(pen, 'I', 76, 24, 30, 18);
@@ -376,7 +373,6 @@ export function buildRoom(loc: LocationInfo, level = 0): Room {
     if (level > 0) drawPoster(pen, 'J', 24, 24, 30, 18, ['#3f7fd0', '#e8c46a', '#2fa58f']);
     // Steckdosen über der Fussleiste
     for (let u = 40; u < W * 16 - 20; u += 72) pen.faceJ(0, 0, 0, u, 6, 3, 3, '#e6e4da');
-    if (level === 0) addDoor(W * 16 - 14);
   }
 
   // Pinnwandrahmen. Die Zettel darauf zeichnet die Welt je nach echten Aufträgen.
@@ -415,6 +411,12 @@ export function buildRoom(loc: LocationInfo, level = 0): Room {
   fp.box(W - 0.06, D - 0.06, 0, THICK + 0.1, THICK + 0.1, FRONT_H + 6, pillar);
   for (let k = stepI; k < W; k += stepI) fp.box(k - 0.14, D - 0.04, 0, 0.28, THICK + 0.08, FRONT_H + 5, pillar);
   for (let k = stepJ; k < D; k += stepJ) fp.box(W - 0.04, k - 0.14, 0, THICK + 0.08, 0.28, FRONT_H + 5, pillar);
+
+  if (level === 0) {
+    const u = loc.door.i * 16 + 2;
+    drawDoor(fp, D + THICK, u);
+    doors.push({ face: 'J', j: D + THICK, u: u - 2, w: 17, h: 40 });
+  }
 
   return { base, front, pen, width, height, board: b, doors };
 }

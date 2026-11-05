@@ -4,8 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { after, before, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { BASE_CONTEXT_TOKENS, MODELS, RULES, agentTitle, isProp, commandRisks, costFromUsage, estimateStepUsd, locationById, modelById } from '../shared/catalog.ts';
-import { blockedEdges, blockedSet, checkPlacement, findPath, meetingDoor, meetingSeats, standingTile } from '../shared/layout.ts';
+import { BASE_CONTEXT_TOKENS, LOCATIONS, MODELS, RULES, agentTitle, isProp, commandRisks, costFromUsage, estimateStepUsd, locationById, modelById } from '../shared/catalog.ts';
+import { blockedEdges, blockedSet, checkPlacement, findPath, footprint, meetingDoor, meetingSeats, standingTile } from '../shared/layout.ts';
 import type { Look } from '../shared/types.ts';
 import { Engine } from '../server/engine.ts';
 import { FxSource, parseEcb } from '../server/fx.ts';
@@ -16,7 +16,7 @@ import { boardNotes, noteTaker } from '../shared/board.ts';
 import { html } from '../client/ui/html.ts';
 import { ROLE_TEMPLATE, colorInText, parseRole, roleToMarkdown, withRoleColor } from '../shared/roleMarkdown.ts';
 import { NOTE_COLORS, noteInk, noteLook, roleColor } from '../shared/board.ts';
-import { buildingAt, roomOf } from '../shared/building.ts';
+import { baseFloorOf, buildingAt, roomOf, siteAt } from '../shared/building.ts';
 import { isScrumMaster, openSprint, scrumMaster, sprintCommitted, sprintRows } from '../shared/scrum.ts';
 import { parsePlanning } from '../server/prompts.ts';
 import { roadmapRows } from '../shared/roadmap.ts';
@@ -2112,7 +2112,7 @@ test('Anbau: nur am eigenen Haus, nur soweit das Grundstück reicht, in Baupunkt
   engine.expandBuilding(company.id, { kind: 'tiefer' });
   assert.equal(company.buildPoints, before - 100);
   assert.deepEqual([roomOf(company).w, roomOf(company).d], [start.w + 1, start.d + 1]);
-  assert.equal(roomOf(company).door.i, start.door.i + 1, 'Die Tür wandert mit der Wand');
+  assert.equal(roomOf(company).door.j, roomOf(company).d - 1, 'Die Tür bleibt in der Wand zur Strasse');
   engine.placeItem(company.id, { kind: 'plant', i: start.w, j: start.d, rot: 0 });
   engine.expandBuilding(company.id, { kind: 'breiter' });
   engine.expandBuilding(company.id, { kind: 'breiter' });
@@ -2588,4 +2588,51 @@ test('Roadmap: alle Aufgaben mit Stand und Verantwortlichen aus dem echten Stand
   engine.decide(company.id, order.id, { decision: 'accept', checked: order.criteria.map(() => true) });
   assert.equal(row(order.id).phase, 'erledigt');
   assert.ok(row(order.id).costEur! > 0, 'Die Kosten stammen aus den Läufen');
+});
+
+test('Jede Haustür liegt in der Wand zur Strasse, und ihr Feld ist frei', () => {
+  for (const loc of LOCATIONS) {
+    assert.equal(loc.door.j, loc.d - 1, loc.id);
+    assert.ok(loc.door.i >= 0 && loc.door.i < loc.w, loc.id);
+    const taken = (loc.props ?? []).concat(loc.startItems.map((s: { kind: string; i: number; j: number }) => ({ ...footprint(s.kind as never), ...s })) as never);
+    for (const p of taken) assert.ok(!(loc.door.i >= p.i && loc.door.i < p.i + p.w && loc.door.j >= p.j && loc.door.j < p.j + p.d), `${loc.id}: ${p.kind}`);
+  }
+});
+
+test('Standorte: Hineingehen ohne Umzug, dort einrichten und ein eigenes Team aufbauen', async () => {
+  const company = newCompany();
+  company.buildPoints = 2000;
+  const mila = await hired(company.id, 'Mila');
+  const head = { location: company.locationId, site: company.town.siteId, desk: mila.deskId };
+  assert.throws(() => engine.enterSite(company.id, 'eckladen'), /gehört dir nicht/);
+  engine.townAction(company.id, 'eckladen', { action: 'rent' });
+
+  const floor = engine.enterSite(company.id, 'eckladen');
+  assert.equal(floor, 100);
+  assert.equal(engine.enterSite(company.id, 'eckladen'), 100, 'Ein zweites Mal entsteht nichts Neues');
+  assert.equal(company.locationId, head.location, 'Die Firma ist nicht umgezogen');
+  assert.equal(company.town.siteId, head.site);
+  assert.equal(mila.deskId, head.desk);
+  assert.equal(baseFloorOf(company, 'eckladen'), 100);
+  assert.equal(siteAt(company, floor).locationId, 'eckladen');
+  assert.equal(roomOf(company, floor).id, 'eckladen');
+  assert.equal(roomOf(company, 0).id, head.location, 'Der Firmensitz bleibt, wie er ist');
+
+  const desk = engine.placeItem(company.id, { kind: 'desk', floor, i: 1, j: 1, rot: 0 });
+  assert.equal(desk.floor, 100);
+  assert.throws(() => engine.placeItem(company.id, { kind: 'desk', floor: 200, i: 1, j: 1, rot: 0 }), /Etage/);
+  const alex = await engine.hire(company.id, { name: 'Alex', roleId: 'text', skillIds: ['text'], modelId: 'claude-haiku-5-5', look: LOOK, deskId: desk.id });
+  await until(() => alex.hired, 'Einstellung');
+  assert.equal(alex.deskId, desk.id);
+  const team = engine.createTeam(company.id, { name: 'Laden', memberIds: [alex.id], leadId: alex.id });
+  assert.deepEqual(team.memberIds, [alex.id]);
+  const order = await engine.startOrder(company.id, orderInput(alex.id, 'Am neuen Standort'));
+  await until(() => order.status === 'review', 'Abnahme');
+
+  assert.throws(() => engine.townAction(company.id, 'eckladen', { action: 'move' }), /weiterer Standort/);
+  engine.decide(company.id, order.id, { decision: 'accept', checked: [true] });
+  engine.townAction(company.id, 'kino', { action: 'rent' });
+  engine.townAction(company.id, 'kino', { action: 'move' });
+  assert.equal(company.locationId, 'kino');
+  assert.ok(company.placed.some((p) => p.id === desk.id), 'Ein Umzug des Firmensitzes lässt den anderen Standort stehen');
 });

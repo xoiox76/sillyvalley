@@ -10,7 +10,7 @@ import { DEFAULT_CEO, LOOK_OPTIONS, DEPARTMENT_COLORS, FURNITURE, LOCATIONS, isP
 import type { Settings } from './settings.ts';
 import { openSprint, scrumMaster, sprintCommitted, sprintRows } from '../shared/scrum.ts';
 import { checkDepartment, checkPlacement, deskDepartment } from '../shared/layout.ts';
-import { EXTEND_COST, SHAFT_COST, buildLimits, buildingAt, checkShaft, floorCost, floorOf, isShaft, itemsOnFloor, roomAt, roomOf, shaftLanding } from '../shared/building.ts';
+import { SITE_STEP, baseFloorOf, siteAt, storeyOf, EXTEND_COST, SHAFT_COST, buildLimits, buildingAt, checkShaft, floorCost, floorOf, isShaft, itemsOnFloor, roomAt, roomOf, shaftLanding } from '../shared/building.ts';
 import { HOME_ROOMS, parcelById, parcelOfLocation, startTown } from '../shared/town.ts';
 import type {
   CompanyRepo, OrderGit,
@@ -2426,7 +2426,8 @@ export class Engine {
   /** Neu gekauft oder aus dem Inventar. Was im Inventar liegt, ist schon bezahlt. */
   private checkFloor(company: Company, floor: number | undefined): number {
     const wanted = floor ?? 0;
-    if (!Number.isInteger(wanted) || wanted < 0 || wanted >= buildingAt(company.town, company.town.siteId).floors) throw new GameError('Diese Etage gibt es nicht.');
+    const site = siteAt(company, wanted);
+    if (!Number.isInteger(wanted) || wanted < 0 || storeyOf(wanted) >= buildingAt(company.town, site.siteId).floors || (wanted >= SITE_STEP && !company.town.extra?.[Math.floor(wanted / SITE_STEP) - 1])) throw new GameError('Diese Etage gibt es nicht.');
     return wanted;
   }
 
@@ -2608,7 +2609,7 @@ export class Engine {
         this.assertBuildPoints(company, parcel.price!);
         this.spendBuildPoints(company, parcel.price!);
         town.rented.push(parcel.id);
-        this.notify(company, 'info', `${parcel.name} ist gemietet. Du kannst einziehen.`);
+        this.notify(company, 'info', `${parcel.name} ist gemietet. Die Tür führt hinein.`);
         break;
       case 'build':
         if (parcel.kind !== 'lot') throw new GameError('Hier kannst du nicht bauen.');
@@ -2617,7 +2618,7 @@ export class Engine {
         this.assertBuildPoints(company, parcel.buildCost!);
         this.spendBuildPoints(company, parcel.buildCost!);
         town.built.push(parcel.id);
-        this.notify(company, 'info', `Dein Neubau auf ${parcel.name} steht. Du kannst einziehen.`);
+        this.notify(company, 'info', `Dein Neubau auf ${parcel.name} steht. Die Tür führt hinein.`);
         break;
       case 'move': {
         const open = parcel.kind === 'home' || town.rented.includes(parcel.id) || town.built.includes(parcel.id);
@@ -2633,7 +2634,31 @@ export class Engine {
     this.touch(company);
   }
 
+  /** Hineingehen ohne Umzug: Ein Haus, das der Firma gehört oder das sie gemietet hat, wird ein weiterer Standort. */
+  enterSite(companyId: string, parcelId: string): number {
+    const company = this.require(companyId);
+    const known = baseFloorOf(company, parcelId);
+    if (known !== null) return known;
+    const parcel = parcelById(parcelId);
+    if (!parcel) throw new GameError('Dieses Grundstück gibt es nicht.', 404);
+    const { town } = company;
+    const open = parcel.kind === 'home' || town.rented.includes(parcel.id) || town.built.includes(parcel.id);
+    if (!open) throw new GameError('Dieses Haus gehört dir nicht.');
+    const locationId = parcel.kind === 'home' ? 'garage' : parcel.locationId;
+    if (!locationId) throw new GameError('Hier gibt es keinen Raum.');
+    town.extra ??= [];
+    town.extra.push({ siteId: parcel.id, locationId });
+    const base = town.extra.length * SITE_STEP;
+    const building = buildingAt(town, parcel.id);
+    const fresh = town.furnished.includes(locationId) ? [] : this.propsOf(locationId);
+    if (!town.furnished.includes(locationId)) town.furnished.push(locationId);
+    company.placed.push(...fresh.map((item) => ({ ...item, floor: base })), ...this.shaftItems(building).map((item) => ({ ...item, floor: base + floorOf(item) })));
+    this.touch(company);
+    return base;
+  }
+
   private relocate(company: Company, locationId: LocationId, siteId: string, cost: number): void {
+    if (baseFloorOf(company, siteId) !== null && siteId !== company.town.siteId) throw new GameError('Hier arbeitet deine Firma schon als weiterer Standort.');
     const targetBuilding = buildingAt(company.town, siteId);
     const target = roomAt(locationId, targetBuilding);
     if (company.locationId === locationId && company.town.siteId === siteId) throw new GameError('Deine Firma sitzt schon dort.');
@@ -2655,7 +2680,9 @@ export class Engine {
       placed.push(candidate);
       return true;
     };
+    const elsewhere = company.placed.filter((item) => floorOf(item) >= SITE_STEP);
     for (const item of company.placed) {
+      if (floorOf(item) >= SITE_STEP) continue;
       if (isShaft(item.kind)) continue;
       if (isProp(item.kind)) {
         stored.push(item);
@@ -2673,12 +2700,16 @@ export class Engine {
     // Abteilungen sind Bereiche des alten Grundrisses. Was in den neuen passt, bleibt; der Rest gibt sein Budget zurück.
     const kept: Department[] = [];
     for (const department of company.departments) {
+      if (floorOf(department) >= SITE_STEP) {
+        kept.push(department);
+        continue;
+      }
       const onFloor = floorOf(department) < targetBuilding.floors;
       if (onFloor && checkDepartment(roomAt(locationId, targetBuilding, floorOf(department)), kept.filter((d) => floorOf(d) === floorOf(department)), department).ok) kept.push(department);
       else this.notify(company, 'info', `Die Abteilung "${department.name}" passt nicht in den neuen Grundriss. Stecke sie neu ab; ihr Wissen bleibt erhalten.`);
     }
     company.departments = kept;
-    company.placed = placed;
+    company.placed = [...placed, ...elsewhere];
     company.inventory.push(...stored.map((item) => ({ id: item.id, kind: item.kind, at: Date.now() })));
     if (!company.town.furnished.includes(locationId)) company.town.furnished.push(locationId);
     if (stored.length) this.notify(company, 'info', `Im Inventar liegt jetzt: ${stored.map((item) => furnitureByKind(item.kind).title).join(', ')}. Von dort stellst du es wieder auf.`);

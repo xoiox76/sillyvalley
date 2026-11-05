@@ -70,6 +70,7 @@ export const api = {
   orderDiff: (id: string, orderId: string) => request<{ diff: string }>('GET', `${base(id)}/orders/${orderId}/diff`),
   pushOrder: (id: string, orderId: string) => request('POST', `${base(id)}/orders/${orderId}/push`, {}),
   openOrderPr: (id: string, orderId: string) => request('POST', `${base(id)}/orders/${orderId}/pr`, {}),
+  enterSite: (id: string, parcelId: string) => request<{ floor: number; snapshot: Snapshot }>('POST', `${base(id)}/town/${parcelId}/enter`, {}),
   dropNote: (id: string, noteId: string) => request('POST', `${base(id)}/board/${noteId}/drop`, {}),
   createRole: (id: string, body: unknown) => request<{ id: string }>('POST', `${base(id)}/roles`, body),
   updateRole: (id: string, roleId: string, body: unknown) => request('PATCH', `${base(id)}/roles/${roleId}`, body),

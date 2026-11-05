@@ -10,6 +10,8 @@ import type { Company } from '../../shared/types.ts';
 import { characterSprite, type Pose, type View } from './characters.ts';
 import { Pen, darken, fillPoly, hash2, layer, lighten, line, rect, seeded, tri, type Ctx, type Layer } from './pixel.ts';
 
+/** So hoch ragen die Wände des Büros über den Boden. */
+const WALL_TOP = 60;
 const SPEED = 4.2;
 const MARGIN = 90;
 const TOP = 70;
@@ -25,11 +27,15 @@ const KEYS: Record<string, TownTile> = {
 export interface TownCallbacks {
   /** Die Figur steht jetzt an diesem Grundstück, oder an keinem mehr. */
   onParcel(parcelId: string | null): void;
+  /** Die Figur hat die Tür eines eigenen Hauses erreicht. */
+  onEnter(parcelId: string): void;
   /** Tastatur gehört gerade einem Fenster oder Eingabefeld. */
   keyboardBlocked(): boolean;
 }
 
 interface Piece {
+  /** Was wirklich steht, wenn es kleiner ist als das Grundstück. Davor läuft die Figur sichtbar. */
+  solid?: { i: number; j: number; w: number; d: number };
   i: number;
   j: number;
   w: number;
@@ -73,6 +79,8 @@ export class TownView {
   private flip = false;
   private walking = false;
   private parcel: string | null = null;
+  private entering: string | null = null;
+  private blocked: Set<string> = TOWN_BLOCKED;
   private readonly onKeyDown: (e: KeyboardEvent) => void;
   private readonly onKeyUp: (e: KeyboardEvent) => void;
 
@@ -99,17 +107,21 @@ export class TownView {
     this.treeImages = [buildTree(0), buildTree(1), buildTree(2)];
     new ResizeObserver(() => this.resize()).observe(container);
     this.canvas.addEventListener('click', (e) => this.onClick(e));
+    this.canvas.addEventListener('pointermove', (e) => {
+      this.canvas.style.cursor = this.ownDoorAt(e) ? 'pointer' : 'default';
+    });
     this.onKeyDown = (e) => {
       const step = KEYS[e.key];
       if (!step || !this.active || this.callbacks.keyboardBlocked()) return;
       e.preventDefault();
       // Gehaltene Tasten führt move() fort; die Wiederholungen des Systems ändern nichts daran.
       if (e.repeat) return;
+      this.entering = null;
       this.key = step;
       // Der erste Schritt steht sofort fest, damit auch ein kurzes Antippen zwischen zwei Bildern zählt.
       const from = { i: Math.floor(this.x), j: Math.floor(this.y) };
       const next = { i: from.i + step.i, j: from.j + step.j };
-      this.path = inTown(next) && !TOWN_BLOCKED.has(`${next.i},${next.j}`) ? [next] : [];
+      this.path = inTown(next) && !this.blocked.has(`${next.i},${next.j}`) ? [next] : [];
     };
     this.onKeyUp = (e) => {
       if (KEYS[e.key]) this.key = null;
@@ -137,11 +149,17 @@ export class TownView {
     if (key === this.stateKey) return;
     this.stateKey = key;
     this.pieces = buildPieces(company);
+    // Ein Neubau steht auf einem Grundstück, das vorher begehbar war. Durch ihn hindurch geht es nicht mehr.
+    this.blocked = new Set(TOWN_BLOCKED);
+    for (const { solid } of this.pieces) {
+      if (!solid) continue;
+      for (let i = Math.floor(solid.i); i < solid.i + solid.w; i++) for (let j = Math.floor(solid.j); j < solid.j + solid.d; j++) this.blocked.add(`${i},${j}`);
+    }
   }
 
   /** Beim Verlassen des Büros steht die Figur vor der eigenen Tür. */
-  enter(): void {
-    const site = parcelById(this.company?.town.siteId ?? '') ?? PARCELS[0];
+  enter(siteId = this.company?.town.siteId ?? ''): void {
+    const site = parcelById(siteId) ?? PARCELS[0];
     this.x = site.entry.i + 0.5;
     this.y = site.entry.j + 0.5;
     this.path = [];
@@ -195,7 +213,33 @@ export class TownView {
     return inTown(tile) ? tile : null;
   }
 
+  /** Die Tür eines Hauses, das der Firma gehört. Sie zählt nach der Stelle im Bild, nicht nach dem Feld. */
+  private ownDoorAt(e: MouseEvent): Parcel | null {
+    if (!this.company) return null;
+    const box = this.canvas.getBoundingClientRect();
+    const x = (e.clientX - box.left) / this.scale - this.camX;
+    const y = (e.clientY - box.top) / this.scale - this.camY;
+    return PARCELS.find((p) => {
+      const door = parcelDoor(this.company!, p);
+      if (!door) return false;
+      const u = x - (originX() + (door.i - door.j) * 16);
+      if (u < door.u || u >= door.u + DOOR_WIDTH) return false;
+      const up = TOP + (door.i + door.j) * 8 + Math.floor(u / 2) - y;
+      return up >= 0 && up < DOOR_HEIGHT;
+    }) ?? null;
+  }
+
   private onClick(e: MouseEvent): void {
+    const parcel = this.ownDoorAt(e);
+    if (parcel) {
+      this.walkTo(parcel.entry);
+      this.entering = parcel.id;
+      if (!this.path.length) {
+        this.entering = null;
+        this.callbacks.onEnter(parcel.id);
+      }
+      return;
+    }
     const tile = this.tileAt(e);
     if (tile) this.walkTo(tile);
   }
@@ -204,10 +248,11 @@ export class TownView {
     const from = { i: Math.floor(this.x), j: Math.floor(this.y) };
     // Wer auf ein Gebäude klickt, will dorthin: Der Weg endet vor dessen Eingang.
     const parcel = PARCELS.find((p) => inParcel(p, tile));
-    const target = TOWN_BLOCKED.has(`${tile.i},${tile.j}`) ? parcel?.entry : tile;
+    const target = this.blocked.has(`${tile.i},${tile.j}`) ? parcel?.entry : tile;
     if (!target) return;
     this.key = null;
-    this.path = findPath({ w: TOWN_W, d: TOWN_D }, TOWN_BLOCKED, from, target);
+    this.entering = null;
+    this.path = findPath({ w: TOWN_W, d: TOWN_D }, this.blocked, from, target);
   }
 
   private frame(time: number): void {
@@ -224,7 +269,7 @@ export class TownView {
   private move(dt: number): void {
     if (!this.path.length && this.key) {
       const next = { i: Math.floor(this.x) + this.key.i, j: Math.floor(this.y) + this.key.j };
-      if (inTown(next) && !TOWN_BLOCKED.has(`${next.i},${next.j}`)) this.path = [next];
+      if (inTown(next) && !this.blocked.has(`${next.i},${next.j}`)) this.path = [next];
     }
     this.walking = this.path.length > 0;
     // Auch bei wenigen Bildern pro Sekunde legt die Figur die Strecke zurück, die der verstrichenen Zeit entspricht.
@@ -245,10 +290,16 @@ export class TownView {
         this.path.shift();
         step -= dist;
         this.updateParcel();
+        if (!this.path.length && this.entering) {
+          const parcelId = this.entering;
+          this.entering = null;
+          this.callbacks.onEnter(parcelId);
+          return;
+        }
         // Mit gehaltener Taste geht es nahtlos auf das nächste Feld.
         if (!this.path.length && this.key) {
           const more = { i: next.i + this.key.i, j: next.j + this.key.j };
-          if (inTown(more) && !TOWN_BLOCKED.has(`${more.i},${more.j}`)) this.path = [more];
+          if (inTown(more) && !this.blocked.has(`${more.i},${more.j}`)) this.path = [more];
         }
       } else {
         this.x += (dx / dist) * step;
@@ -278,8 +329,8 @@ export class TownView {
     for (let y = 0; y < this.lowH + 64; y += 64) for (let x = 0; x < this.lowW + 64; x += 64) ctx.drawImage(this.field.canvas, x, y);
     ctx.drawImage(this.ground.canvas, this.camX, this.camY);
 
-    const parts: { i: number; j: number; w: number; d: number; draw: () => void }[] = [
-      ...this.pieces.map((piece) => ({ ...piece, draw: () => ctx.drawImage(piece.image.canvas, piece.left + this.camX, piece.top + this.camY) })),
+    const parts: { i: number; j: number; w: number; d: number; solid?: Piece['solid']; draw: () => void }[] = [
+      ...this.pieces.map((piece) => ({ ...piece, solid: piece.solid, draw: () => ctx.drawImage(piece.image.canvas, piece.left + this.camX, piece.top + this.camY) })),
       ...TREES.map((t) => ({
         i: t.i, j: t.j, w: 1, d: 1,
         draw: () => ctx.drawImage(this.treeImages[(t.i * 7 + t.j * 3) % 3].canvas, originX() + (t.i - t.j) * 16 - 16 + this.camX, TOP + (t.i + t.j) * 8 - 40 + this.camY),
@@ -287,7 +338,10 @@ export class TownView {
     ].sort((a, b) => a.i + a.w + a.j + a.d - (b.i + b.w + b.j + b.d));
 
     // Vor der Figur liegt alles, was auf beiden Achsen hinter ihr endet.
-    const inFront = (p: { i: number; j: number; w: number; d: number }) => this.x < p.i + p.w && this.y < p.j + p.d;
+    const inFront = (part: { i: number; j: number; w: number; d: number; solid?: Piece['solid'] }) => {
+      const p = part.solid ?? part;
+      return this.x < p.i + p.w && this.y < p.j + p.d;
+    };
     for (const part of parts) if (!inFront(part)) part.draw();
     this.drawPlayer(ctx, screenX + this.camX, screenY + this.camY, time);
     for (const part of parts) if (inFront(part)) part.draw();
@@ -435,43 +489,143 @@ const originX = () => TOWN_D * 16 + MARGIN;
 
 export interface TownBackdrop {
   image: Layer;
+  /** Was vor dem Grundstück steht und deshalb nach dem Büro gezeichnet wird. */
+  front: Layer;
   /** Die Mitte des eigenen Grundstücks im Bild. */
   x: number;
   y: number;
   /** So oft ist die Stadt zu vergrössern, damit das Büro auf sein Grundstück passt. */
   zoom: number;
+  /** Das Grundstück in den Feldern des Büros: Ein Haus steht zur Strasse hin, dahinter liegt der Garten. */
+  plot: { image: Layer; ox: number; oy: number; i0: number; j0: number; i1: number; j1: number };
 }
 
 let backdropCache: { key: string; backdrop: TownBackdrop } | null = null;
 
 /** Die echte Stadt rund um den Standort der Firma, ohne das eigene Haus: An dessen Stelle steht das Büro. */
-export function townBackdrop(company: Company, roomW: number, roomD: number): TownBackdrop | null {
-  const site = parcelById(company.town.siteId);
+export function townBackdrop(company: Company, siteId: string, roomW: number, roomD: number, doorI: number): TownBackdrop | null {
+  const site = parcelById(siteId);
   if (!site) return null;
-  const key = `${JSON.stringify(company.town)}:${roomW}x${roomD}`;
+  const key = `${siteId}:${JSON.stringify(company.town)}:${roomW}x${roomD}:${doorI}`;
   if (backdropCache?.key === key) return backdropCache.backdrop;
+  const zoom = Math.max(1, Math.min(4, Math.ceil(Math.max(roomW / site.w, roomD / site.d))));
   const ground = buildGround();
   const image = layer(ground.canvas.width, ground.canvas.height);
   const field = grassField();
   for (let y = 0; y < image.canvas.height; y += 64) for (let x = 0; x < image.canvas.width; x += 64) image.ctx.drawImage(field.canvas, x, y);
   image.ctx.drawImage(ground.canvas, 0, 0);
   const trees = [buildTree(0), buildTree(1), buildTree(2)];
+  const front = layer(ground.canvas.width, ground.canvas.height);
+  // Davor steht, was auf einer der beiden Achsen ganz hinter dem Grundstück beginnt. Alles andere liegt unter dem Büro.
+  const target = (i: number, j: number) => (i >= site.i + site.w || j >= site.j + site.d ? front : image).ctx;
   const parts: { i: number; j: number; w: number; d: number; draw: () => void }[] = [
-    ...buildPieces(company, site.id).map((part) => ({ i: part.i, j: part.j, w: part.w, d: part.d, draw: () => image.ctx.drawImage(part.image.canvas, part.left, part.top) })),
-    ...TREES.filter((t) => !inParcel(site, t)).map((t) => ({
+    ...buildPieces(company, site.id).map((part) => ({ i: part.i, j: part.j, w: part.w, d: part.d, draw: () => target(part.i, part.j).drawImage(part.image.canvas, part.left, part.top) })),
+    ...TREES.filter((t) => !inParcel(site, t) && !hidesHouse(site, t, roomW, roomD, zoom)).map((t) => ({
       i: t.i, j: t.j, w: 1, d: 1,
-      draw: () => image.ctx.drawImage(trees[(t.i * 7 + t.j * 3) % 3].canvas, originX() + (t.i - t.j) * 16 - 16, TOP + (t.i + t.j) * 8 - 40),
+      draw: () => target(t.i, t.j).drawImage(trees[(t.i * 7 + t.j * 3) % 3].canvas, originX() + (t.i - t.j) * 16 - 16, TOP + (t.i + t.j) * 8 - 40),
     })),
   ].sort((a, b) => a.i + a.w + a.j + a.d - (b.i + b.w + b.j + b.d));
   for (const part of parts) part.draw();
+  // Dieselbe Abdunklung wie im Rest der Stadt, nur auf den Häusern selbst.
+  front.ctx.globalCompositeOperation = 'source-atop';
+  rect(front.ctx, 0, 0, front.canvas.width, front.canvas.height, 'rgba(12, 22, 38, .16)');
+  front.ctx.globalCompositeOperation = 'source-over';
   const backdrop: TownBackdrop = {
     image,
-    x: originX() + (site.i + site.w / 2 - site.j - site.d / 2) * 16,
-    y: TOP + (site.i + site.w / 2 + site.j + site.d / 2) * 8,
-    zoom: Math.max(1, Math.min(4, Math.ceil(Math.max(roomW / site.w, roomD / site.d)))),
+    front,
+    x: originX() + (site.i + site.w / 2 - site.j - site.d) * 16,
+    y: TOP + (site.i + site.w / 2 + site.j + site.d) * 8,
+    zoom,
+    plot: paintPlot(site, roomW, roomD, doorI, zoom, trees),
   };
   backdropCache = { key, backdrop };
   return backdrop;
+}
+
+/**
+ * Die Stadt liegt unter dem Büro. Ein Baum davor käme mit dem Stamm unter dem Haus hervor, seine Krone läge dahinter.
+ * Deshalb bleiben vorn alle Bäume weg, deren vergrössertes Bild in das Haus hineinragt. Dahinter stören sie nicht.
+ */
+function hidesHouse(site: Parcel, t: { i: number; j: number }, roomW: number, roomD: number, zoom: number): boolean {
+  const anchorI = site.i + site.w / 2;
+  const anchorJ = site.j + site.d;
+  const gap = plotGap(site, roomD, zoom);
+  // Die Lage des Baums in Feldern des Büros.
+  const i = roomW / 2 + (t.i + 0.5 - anchorI) * zoom;
+  const j = roomD + gap + (t.j + 0.5 - anchorJ) * zoom;
+  if (i + j < roomW / 2 + roomD / 2) return false;
+  const px = (i - j) * 16;
+  const py = (i + j) * 8;
+  const left = -roomD * 16 - 16;
+  const right = roomW * 16 + 16;
+  const top = -WALL_TOP;
+  const bottom = (roomW + roomD) * 8 + 16;
+  const size = 32 * zoom;
+  return px + size > left && px - size < right && py > top && py - 50 * zoom < bottom;
+}
+
+/** Abstand des Hauses zur Strasse, in Feldern des Büros. */
+export const plotGap = (site: Parcel, roomD: number, zoom: number) => Math.min(1.5, Math.max(0, (site.d * zoom - roomD) / 2));
+
+/**
+ * Das eigene Grundstück in der Schärfe des Büros. Es trägt das Haus: Rasen oder Pflaster, Weg zur Strasse, Hecke und Schatten.
+ * Das Büro sitzt mit (0, 0) in seiner hinteren Ecke, darum gelten hier seine Koordinaten.
+ */
+function paintPlot(site: Parcel, roomW: number, roomD: number, doorI: number, zoom: number, trees: Layer[]): TownBackdrop['plot'] {
+  const gap = plotGap(site, roomD, zoom);
+  const i0 = roomW / 2 - (site.w * zoom) / 2;
+  const i1 = roomW / 2 + (site.w * zoom) / 2;
+  const j1 = roomD + gap;
+  const j0 = j1 - site.d * zoom;
+  const pad = 8;
+  const headroom = 44;
+  const ox = Math.round((j1 - i0) * 16) + pad;
+  const oy = headroom + pad - Math.round((i0 + j0) * 8);
+  const width = Math.ceil((i1 - i0 + j1 - j0) * 16) + pad * 2;
+  const image = layer(width, Math.ceil((i1 - i0 + j1 - j0) * 8) + headroom + pad * 2);
+  const pen = new Pen(image.ctx, ox, oy);
+  const paved = site.kind === 'shop' || site.kind === 'vacant';
+  const random = seeded(site.i * 97 + site.j);
+  pen.floorPoly(i0, j0, i1 - i0, j1 - j0, paved ? '#8d8f8f' : '#4a8a50');
+  // Rasen oder Pflaster nicht einfarbig. Punkte liegen nur innerhalb des Grundstücks.
+  for (let n = 0; n < (i1 - i0) * (j1 - j0) * 26; n++) {
+    const [x, y] = pen.pt(i0 + random() * (i1 - i0), j0 + random() * (j1 - j0));
+    rect(image.ctx, x, y, paved ? 2 : 1 + Math.floor(random() * 2), 1, paved ? (random() > 0.5 ? '#818383' : '#999b9b') : random() > 0.5 ? '#569a5c' : '#3e7a46');
+  }
+  // Schatten des Hauses auf dem Boden. Er bindet es stärker an den Grund als jede Kante.
+  pen.floorPoly(-0.3, -0.5, roomW + 1.5, roomD + 1.1, 'rgba(18, 28, 26, .32)');
+  pen.floorPoly(-0.12, -0.12, roomW + 0.36, roomD + 0.36, 'rgba(18, 28, 26, .4)');
+  // Der Weg von der Haustür zum Bürgersteig.
+  const stone = paved ? '#a7a8a4' : '#b5ad96';
+  const edge = paved ? '#8a8b88' : '#8f8772';
+  pen.floorPoly(doorI + 0.04, roomD, 0.92, j1 - roomD + 0.1, edge);
+  pen.floorPoly(doorI + 0.1, roomD, 0.8, j1 - roomD + 0.1, stone);
+  if (!paved) {
+    // Hecke an den Grenzen und Beete am Haus, offen dort, wo der Weg zur Strasse führt.
+    const shades = ['#2c6a3d', '#357a46', '#46935a'];
+    const hedge = (i: number, j: number) => {
+      const [x, y] = pen.pt(i, j);
+      for (let k = 0; k < 7; k++) rect(image.ctx, x + Math.round((random() - 0.5) * 8), y - Math.round(random() * 6), 2, 2, shades[Math.floor(random() * 3)]);
+    };
+    for (let i = i0 + 0.3; i < i1; i += 0.45) {
+      hedge(i, j0 + 0.3);
+      if (Math.abs(i - doorI - 0.5) > 0.9) hedge(i, j1 - 0.2);
+      if (i > 0 && i < roomW && Math.abs(i - doorI - 0.5) > 0.9 && gap >= 1) hedge(i, roomD + 0.45);
+    }
+    for (let j = j0 + 0.3; j < j1; j += 0.45) {
+      hedge(i0 + 0.3, j);
+      hedge(i1 - 0.3, j);
+    }
+    // Bäume nur hinter und neben dem Haus, sonst stünden sie im Bild vor dem Büro.
+    const spots: [number, number][] = [[i0 + 1.5, j0 + 1.5], [roomW * 0.35, Math.max(j0 + 1.2, -2.6)], [roomW * 0.75, Math.max(j0 + 1.2, -3.4)], [i0 + 1.2, roomD * 0.3], [i1 - 1.4, roomD * 0.3]];
+    for (const [i, j] of spots) {
+      if (i > i0 && i < i1 && j > j0 && j < j1 && (j < -1.6 || i < -1.2 || i > roomW + 1.8)) {
+        const [x, y] = pen.pt(i, j);
+        image.ctx.drawImage(trees[Math.floor(random() * 3)].canvas, x - 16, y - 40);
+      }
+    }
+  }
+  return { image, ox, oy, i0, j0, i1, j1 };
 }
 
 function grassField(): Layer {
@@ -783,20 +937,37 @@ function paintShop(pen: Pen, b: TownBuilding, closed: boolean): void {
   pen.faceJ(b.i, front, height, 8, 4, Math.max(4, width - 16), 2, darken(b.color, 0.25));
 }
 
+/** Der Neubau auf einem Grundstück. Etwas Abstand zur Grenze; vorn bleibt der Weg zur Straße frei. Ein Anbau füllt das Grundstück nach und nach. */
+function builtBox(p: Parcel, company: Company) {
+  const house = buildingAt(company.town, p.id);
+  const limits = p.locationId ? buildLimits(p.locationId) : null;
+  const share = (done: number, most: number | undefined) => 0.72 + 0.28 * (most ? done / most : 1);
+  const bw = (p.w - 1) * share(house.w, limits?.w);
+  const bd = (p.d - 1.4) * share(house.d, limits?.d);
+  return { i: p.i + 0.5, j: p.j + p.d - 0.9 - bd, w: bw, d: bd };
+}
+
+const DOOR_WIDTH = 14;
+const DOOR_HEIGHT = 21;
+
+/** Wo die Tür eines Hauses der Firma sitzt: immer mittig in der Front. Fremde Häuser haben hier keine. */
+function parcelDoor(company: Company, site: Parcel): { i: number; j: number; u: number } | null {
+  const { town } = company;
+  const own = site.id === town.siteId || site.kind === 'home' || town.rented.includes(site.id) || town.built.includes(site.id);
+  if (!own) return null;
+  const b = site.kind === 'lot' ? (town.built.includes(site.id) ? builtBox(site, company) : null) : site.building ?? null;
+  return b ? { i: b.i, j: b.j + b.d, u: Math.floor((b.w * 16) / 2) - 7 } : null;
+}
+
 function paintLot(p: Parcel, company: Company): Piece {
   const owned = company.town.owned.includes(p.id);
   const built = company.town.built.includes(p.id);
   const { i, j, w, d } = p;
   if (built) {
-    // Etwas Abstand zur Grundstücksgrenze; vorn bleibt der Weg zur Straße frei. Ein Anbau füllt das Grundstück nach und nach.
     const house = buildingAt(company.town, p.id);
-    const limits = p.locationId ? buildLimits(p.locationId) : null;
-    const share = (done: number, most: number | undefined) => 0.72 + 0.28 * (most ? done / most : 1);
-    const bw = (w - 1) * share(house.w, limits?.w);
-    const bd = (d - 1.4) * share(house.d, limits?.d);
-    const b = { i: i + 0.5, j: j + d - 0.9 - bd, w: bw, d: bd };
+    const b = builtBox(p, company);
     const walls = 44 + FLOOR_H * (house.floors - 1);
-    return piece({ i, j, w, d }, (pen) => {
+    return { solid: b, ...piece({ i, j, w, d }, (pen) => {
       pen.box(b.i, b.j, 0, b.w, b.d, walls, tri('#c8d2d0', 0.14));
       pen.box(b.i - 0.04, b.j - 0.04, walls, b.w + 0.08, b.d + 0.08, 3, tri('#2f6f62', 0.14));
       const front = b.j + b.d;
@@ -811,7 +982,7 @@ function paintLot(p: Parcel, company: Company): Piece {
       pen.faceJ(b.i, front, 0, Math.floor(width / 2) - 7, 0, 14, 21, '#20262f');
       pen.faceJ(b.i, front, 0, Math.floor(width / 2) - 6, 0, 12, 20, '#a8dfe6');
       pen.faceJ(b.i, front, 40, 6, 0, width - 12, 4, '#f8b62d');
-    }, FLOOR_H * (house.floors - 1));
+    }, FLOOR_H * (house.floors - 1)) };
   }
   return piece({ i, j, w, d }, (pen) => {
     if (owned) {

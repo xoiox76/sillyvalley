@@ -225,6 +225,10 @@ async function route(engine: Engine, req: IncomingMessage, res: ServerResponse, 
     }
   }
 
+  if (section === 'town' && parts.length === 5 && parts[4] === 'enter' && method === 'POST') {
+    const floor = engine.enterSite(id, parts[3]);
+    return sendJson(res, 200, { floor, snapshot: engine.snapshot(id) });
+  }
   if (section === 'repo') {
     if (parts.length === 3 && method === 'POST') {
       await engine.connectRepo(id, await readJson(req));

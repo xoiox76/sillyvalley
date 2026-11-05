@@ -344,6 +344,7 @@ export interface LocationInfo {
   w: number;
   d: number;
   /** Feld, durch das neue Mitarbeiter hereinkommen. */
+  /** Das Feld innen an der Haustür. Sie liegt in der vorderen Wand, zur Strasse. */
   door: { i: number; j: number };
   /** Felder, die frei und erreichbar bleiben müssen, etwa vor der Treppe. */
   keep?: { i: number; j: number }[];
@@ -360,7 +361,7 @@ export const LOCATIONS: LocationInfo[] = [
     blurb: 'Startort, 7 × 6 Felder.',
     w: 7,
     d: 6,
-    door: { i: 6, j: 0 },
+    door: { i: 5, j: 5 },
     props: [
       { kind: 'bed', i: 0, j: 0, w: 2, d: 3 },
       { kind: 'toybox', i: 0, j: 5, w: 1, d: 1 },
@@ -389,7 +390,7 @@ export const LOCATIONS: LocationInfo[] = [
     blurb: '9 × 7 Felder, Main Street.',
     w: 9,
     d: 7,
-    door: { i: 8, j: 0 },
+    door: { i: 4, j: 6 },
     props: [],
     startItems: [],
     moveCost: 60,
@@ -400,7 +401,7 @@ export const LOCATIONS: LocationInfo[] = [
     blurb: '13 × 10 Felder.',
     w: 13,
     d: 10,
-    door: { i: 12, j: 0 },
+    door: { i: 6, j: 9 },
     props: [{ kind: 'sofa', i: 0, j: 8, w: 1, d: 2 }],
     startItems: [],
     moveCost: 260,
@@ -411,7 +412,7 @@ export const LOCATIONS: LocationInfo[] = [
     blurb: '10 × 8 Felder.',
     w: 10,
     d: 8,
-    door: { i: 9, j: 0 },
+    door: { i: 4, j: 7 },
     props: [],
     startItems: [],
     moveCost: 100,
@@ -422,7 +423,7 @@ export const LOCATIONS: LocationInfo[] = [
     blurb: '13 × 9 Felder.',
     w: 13,
     d: 9,
-    door: { i: 12, j: 0 },
+    door: { i: 6, j: 8 },
     props: [],
     startItems: [],
     moveCost: 180,
@@ -433,7 +434,7 @@ export const LOCATIONS: LocationInfo[] = [
     blurb: '15 × 11 Felder.',
     w: 15,
     d: 11,
-    door: { i: 14, j: 0 },
+    door: { i: 7, j: 10 },
     props: [],
     startItems: [],
     moveCost: 300,
@@ -444,7 +445,7 @@ export const LOCATIONS: LocationInfo[] = [
     blurb: '11 × 9 Felder.',
     w: 11,
     d: 9,
-    door: { i: 10, j: 0 },
+    door: { i: 5, j: 8 },
     props: [
       { kind: 'lockers', i: 5, j: 0, w: 2, d: 1 },
       { kind: 'sofa', i: 0, j: 7, w: 1, d: 2 },

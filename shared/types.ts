@@ -618,7 +618,10 @@ export interface Shaft {
 
 export interface TownState {
   buildings?: Record<string, Building>;
+  /** Der Firmensitz. */
   siteId: string;
+  /** Weitere Standorte, an denen die Firma ebenfalls arbeitet. Ihre Etagen beginnen bei 100, 200 und so weiter. */
+  extra?: { siteId: string; locationId: LocationId }[];
   owned: string[];
   rented: string[];
   built: string[];
