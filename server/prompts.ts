@@ -5,6 +5,10 @@ import { READ_DIR } from './workspace.ts';
 import { MODELS, ROLES, RULES, SKILLS, agentTitle, modelById, roleById, skillById, skillTitle } from '../shared/catalog.ts';
 import type { Agent, BoardItem, CommandRequest, Company, CompanyRole, Contract, CriterionVerdict, CustomSkill, Department, Job, Mandate, Meeting, MeetingOutcome, Order, StageKind, Verdict } from '../shared/types.ts';
 
+/** In welcher Sprache der Agent schreibt. Sie richtet sich nach der Sprache des Spielers. */
+export const languageRule = (language: 'en' | 'de') =>
+  language === 'de' ? 'Schreibe Dateien, Nachrichten und Antworten auf Deutsch, ausser der Auftrag verlangt ausdrücklich etwas anderes.' : 'Write files, messages and answers in English, unless the order explicitly asks for something else. These instructions are in German; that does not change the language you write in. Keep fixed markers and field names exactly as given.';
+
 export const DECISIONS_FILE = 'wissen/beschluesse.md';
 
 export const stageLabel = (kind: StageKind) => ({ plan: 'Planen', work: 'Arbeiten', check: 'Prüfen' })[kind];

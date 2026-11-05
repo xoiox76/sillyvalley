@@ -2,6 +2,8 @@
 // davon stammt von Agenten. morph gleicht das DOM ab, damit Eingaben und Fokus erhalten bleiben,
 // auch wenn während eines Laufs mehrmals pro Sekunde neue Zustände eintreffen.
 
+import { tr, translateStatics, translateValue } from '../i18n/translate.ts';
+
 export class Safe {
   readonly value: string;
   constructor(value: string) {
@@ -12,24 +14,28 @@ export class Safe {
 const ESCAPES: Record<string, string> = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
 const escapeHtml = (text: string) => text.replace(/[&<>"']/g, (c) => ESCAPES[c]);
 
-function toHtml(value: unknown): string {
+function toHtml(value: unknown, before = ''): string {
   if (value === null || value === undefined || value === false) return '';
   if (value instanceof Safe) return value.value;
-  if (Array.isArray(value)) return value.map(toHtml).join('');
-  return escapeHtml(String(value));
+  if (Array.isArray(value)) return value.map((item) => toHtml(item, before)).join('');
+  return escapeHtml(typeof value === 'string' ? translateValue(value, before) : String(value));
 }
 
 /** Die Oberfläche schreibt ss statt ß. Das betrifft nur die Anzeige, Ergebnisse und Dateien bleiben, wie sie sind. */
 export const withoutEszett = (text: string) => text.replace(/ß/g, 'ss').replace(/ẞ/g, 'SS');
 
+/** Was ohne Vorlage direkt auf dem Bildschirm landet. */
+export const show = (text: string) => withoutEszett(tr(text));
+
 /** Steht der Wert in einem Attribut? Dort können Dateinamen stehen, die stimmen müssen. */
 const inAttribute = (before: string) => /=\s*"[^"]*$/.test(before);
 
 export function html(strings: TemplateStringsArray, ...values: unknown[]): Safe {
-  let out = withoutEszett(strings[0]);
+  const parts = translateStatics(strings);
+  let out = withoutEszett(parts[0]);
   values.forEach((value, index) => {
-    const text = toHtml(value);
-    out += (inAttribute(strings[index]) ? text : withoutEszett(text)) + withoutEszett(strings[index + 1]);
+    const text = toHtml(value, parts[index]);
+    out += (inAttribute(parts[index]) ? text : withoutEszett(text)) + withoutEszett(parts[index + 1]);
   });
   return new Safe(out);
 }

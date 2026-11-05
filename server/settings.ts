@@ -10,6 +10,8 @@ import type { ConnectionView } from '../shared/types.ts';
 
 export class SettingsError extends Error {}
 
+export const SUBSCRIPTION_ID = 'abo';
+
 interface StoredModel {
   remote: string;
   label: string;
@@ -40,24 +42,50 @@ export interface ResolvedModel {
 
 const isLocal = (url: URL) => ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
 
+export type Language = 'en' | 'de';
+
 export class Settings {
   private readonly file: string;
+  private readonly languageFile: string;
+  private currentLanguage: Language = 'en';
   private connections: Connection[] = [];
+  private anthropicKey: string | null = null;
+  private subscription: ModelInfo[] = [];
+  private subscriptionInfo: { label: string; account: string | null; version: string | null } | null = null;
 
   constructor(dataDir: string) {
     this.file = path.join(dataDir, 'verbindungen.json');
+    this.languageFile = path.join(dataDir, 'sprache.json');
     try {
-      this.connections = JSON.parse(fs.readFileSync(this.file, 'utf8')).connections ?? [];
+      if (JSON.parse(fs.readFileSync(this.languageFile, 'utf8')).language === 'de') this.currentLanguage = 'de';
+    } catch {
+      // Ohne Wahl gilt Englisch.
+    }
+    try {
+      const stored = JSON.parse(fs.readFileSync(this.file, 'utf8'));
+      this.connections = stored.connections ?? [];
+      this.anthropicKey = stored.anthropicKey ?? null;
     } catch {
       this.connections = [];
     }
     this.apply();
   }
 
+  get language(): Language {
+    return this.currentLanguage;
+  }
+
+  setLanguage(language: unknown): void {
+    if (language !== 'en' && language !== 'de') throw new SettingsError('Diese Sprache gibt es nicht.');
+    this.currentLanguage = language;
+    fs.mkdirSync(path.dirname(this.languageFile), { recursive: true });
+    fs.writeFileSync(this.languageFile, JSON.stringify({ language }));
+  }
+
   private persist(): void {
     fs.mkdirSync(path.dirname(this.file), { recursive: true });
     const temp = `${this.file}.${randomUUID()}.tmp`;
-    fs.writeFileSync(temp, JSON.stringify({ connections: this.connections }, null, 2), { mode: 0o600 });
+    fs.writeFileSync(temp, JSON.stringify({ connections: this.connections, anthropicKey: this.anthropicKey }, null, 2), { mode: 0o600 });
     fs.renameSync(temp, this.file);
     fs.chmodSync(this.file, 0o600);
   }
@@ -71,8 +99,31 @@ export class Settings {
   }
 
   private apply(): void {
-    setExtraModels(this.connections.flatMap((c) => c.models.map((m) => this.toInfo(c, m))), this.connections.map((c) => ({ id: c.id, label: c.label })));
+    setExtraModels(this.models(), [...(this.subscription.length ? [{ id: SUBSCRIPTION_ID, label: 'OpenAI' }] : []), ...this.connections.map((c) => ({ id: c.id, label: c.label }))]);
   }
+
+  /** Wer lokal bei OpenAI angemeldet ist, arbeitet mit dem eigenen Abo. Das kostet keinen Schlüssel. */
+  useSubscription(info: { account: string | null; version: string | null }): void {
+    this.subscriptionInfo = { label: 'OpenAI', ...info };
+    this.subscription = OPENAI_MODELS.map((m) => ({
+      id: `${SUBSCRIPTION_ID}:${m.remote}`, label: m.label, providerId: SUBSCRIPTION_ID, blurb: 'OpenAI, dein Abo',
+      price: { input: m.input, write5m: m.input, write1h: m.input, read: m.cached, output: m.output }, contextWindow: m.contextWindow, maxOutput: 16_000,
+    }));
+    this.apply();
+  }
+
+  subscriptions() {
+    return this.subscriptionInfo ? [this.subscriptionInfo] : [];
+  }
+
+  /** Für alle, die lieber über einen Schlüssel als über ihr Abo abrechnen. */
+  setAnthropicKey(apiKey: string | null): void {
+    this.anthropicKey = apiKey?.trim() || null;
+    this.persist();
+  }
+
+  getAnthropicKey = () => this.anthropicKey;
+  anthropicKeyEnd = () => this.anthropicKey?.slice(-4) ?? null;
 
   views(): ConnectionView[] {
     return this.connections.map((c) => ({
@@ -82,7 +133,7 @@ export class Settings {
   }
 
   models(): ModelInfo[] {
-    return this.connections.flatMap((c) => c.models.map((m) => this.toInfo(c, m)));
+    return [...this.subscription, ...this.connections.flatMap((c) => c.models.map((m) => this.toInfo(c, m)))];
   }
 
   resolve(modelId: string): ResolvedModel | null {

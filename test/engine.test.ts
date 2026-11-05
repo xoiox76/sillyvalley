@@ -19,9 +19,11 @@ import { NOTE_COLORS, noteInk, noteLook, roleColor } from '../shared/board.ts';
 import { baseFloorOf, buildingAt, roomOf, siteAt } from '../shared/building.ts';
 import { isScrumMaster, openSprint, scrumMaster, sprintCommitted, sprintRows } from '../shared/scrum.ts';
 import { parsePlanning } from '../server/prompts.ts';
+import { quotaClosedUntil } from '../shared/quota.ts';
+import { agentEnv } from '../server/providers/anthropic.ts';
 import { roadmapRows } from '../shared/roadmap.ts';
 import { listAll, resolveIn, safeResolve } from '../server/workspace.ts';
-import { PARCELS, TOWN_BLOCKED, TOWN_D, TOWN_W, firmSign, inParcel, parcelById, parcelNear, tileKind } from '../shared/town.ts';
+import { CITIES, PARCELS, REGION, TOWN_BLOCKED, biomeAt, cityOf, decorIn, isBlocked, parcelsIn, placesIn, settlementIn, townPath, TOWN_D, TOWN_W, firmSign, inParcel, parcelById, parcelNear, tileKind } from '../shared/town.ts';
 import { DECISIONS_FILE, agentProfile, manageSchema, parseMeetingTurn, parsePlan, parseVerdict, verdictSchema } from '../server/prompts.ts';
 
 const FAKE = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fake-agent.mjs');
@@ -1249,10 +1251,12 @@ test('Der Stadtplan ist schlüssig: nichts überlappt, und jeder Eingang ist zu 
     assert.equal(parcelNear(a.entry)?.id, a.id, `${a.id}: Am Eingang muss das Grundstück erkannt werden`);
   }
   const home = parcelById('elternhaus')!;
-  for (const p of PARCELS) {
-    if (p === home) continue;
+  // Eine Suche genügt, wenn sie alle Eingänge findet: Jeder Weg dorthin führt über dieselben Strassen.
+  for (const p of PARCELS.filter((x) => x !== home && (x.price || x.kind === 'shop'))) {
     assert.ok(findPath({ w: TOWN_W, d: TOWN_D }, TOWN_BLOCKED, home.entry, p.entry).length > 0, `${p.id} ist vom Elternhaus aus nicht erreichbar`);
   }
+  assert.ok(CITIES.length >= 6, 'Sechs Städte');
+  for (const city of CITIES) assert.ok(PARCELS.some((p) => cityOf(p.i, p.j)?.id === city.id), `${city.name} ist leer`);
   assert.ok(PARCELS.filter((p) => p.kind === 'lot').length >= 4, 'Viele freie Grundstücke');
   assert.ok(PARCELS.filter((p) => p.kind === 'vacant').length >= 3, 'Leerstehende Läden');
   assert.ok(PARCELS.filter((p) => p.kind === 'house').length >= 4, 'Wohnhäuser');
@@ -2635,4 +2639,89 @@ test('Standorte: Hineingehen ohne Umzug, dort einrichten und ein eigenes Team au
   engine.townAction(company.id, 'kino', { action: 'move' });
   assert.equal(company.locationId, 'kino');
   assert.ok(company.placed.some((p) => p.id === desk.id), 'Ein Umzug des Firmensitzes lässt den anderen Standort stehen');
+});
+
+test('Kontingent leer: Feierabend, wartende Arbeit läuft danach von selbst weiter', async () => {
+  const now = Date.now();
+  assert.equal(quotaClosedUntil(null, now), null);
+  assert.equal(quotaClosedUntil({ status: 'allowed', fiveHour: null, sevenDay: null, at: now }, now), null);
+  assert.equal(quotaClosedUntil({ status: 'rejected', fiveHour: { utilization: 1, resetsAt: now + 5000 }, sevenDay: { utilization: 0.4, resetsAt: now + 99000 }, at: now }, now), now + 5000, 'Es zählt das volle Fenster');
+  assert.equal(quotaClosedUntil({ status: 'rejected', fiveHour: { utilization: 1, resetsAt: now - 1 }, sevenDay: null, at: now }, now), null, 'Danach wird wieder gearbeitet');
+  assert.equal(quotaClosedUntil({ status: 'rejected', fiveHour: null, sevenDay: null, at: now }, now), now + 3_600_000);
+
+  const data = fs.mkdtempSync(path.join(os.tmpdir(), 'sillyvalley-kontingent-'));
+  const own = await makeEngine(data);
+  const company = own.createCompany({ name: 'Feierabend', idea: 'Idee', locationId: 'garage', budgetEur: 10 });
+  const agent = await own.hire(company.id, { name: 'Mila', roleId: 'planung', skillIds: ['konzept'], modelId: 'claude-haiku-5-5', look: LOOK });
+  await until(() => agent.hired, 'Einstellung');
+  await own.chat(company.id, agent.id, '[szenario:kontingent] [bis:2] Hallo');
+  await until(() => own.system().plan?.status === 'rejected' && !company.runs.some((r) => r.status === 'running'), 'Meldung');
+  await assert.rejects(own.chat(company.id, agent.id, 'Noch etwas'), /Feierabend/);
+
+  const order = await own.startOrder(company.id, orderInput(agent.id, 'Wartet aufs Kontingent'));
+  assert.equal(order.status, 'running');
+  await new Promise((r) => setTimeout(r, 200));
+  assert.equal(company.runs.filter((r) => r.orderId === order.id).length, 0, 'Solange ist Feierabend, nichts kostet etwas');
+  await until(() => order.status === 'review', 'Danach läuft die Arbeit von selbst weiter');
+  own.shutdown();
+  fs.rmSync(data, { recursive: true, force: true });
+});
+
+test('Ein Anthropic-Schlüssel ersetzt das Abo nur, wenn er hinterlegt ist', () => {
+  const before = process.env.ANTHROPIC_API_KEY;
+  delete process.env.ANTHROPIC_API_KEY;
+  assert.equal(agentEnv().ANTHROPIC_API_KEY, undefined);
+  assert.equal(agentEnv('geheim').ANTHROPIC_API_KEY, 'geheim');
+  if (before) process.env.ANTHROPIC_API_KEY = before;
+});
+
+test('Die Welt rund ums Tal entsteht aus der Lage und ist überall gleich', () => {
+  assert.equal(biomeAt(-3000, 2200), biomeAt(-3000, 2200));
+  const places = placesIn(-40 * REGION, -40 * REGION, 40 * REGION, 40 * REGION);
+  const far = places.filter((p) => p.id.startsWith('w'));
+  assert.ok(far.length > 200, `Viele Orte, nicht nur ${far.length}`);
+  assert.ok(new Set(far.map((p) => p.name)).size > 50, 'Unterschiedliche Namen');
+  assert.ok(far.every((p) => settlementIn(Number(p.id.split('_')[0].slice(1)), Number(p.id.split('_')[1]))?.name === p.name), 'Der Name hängt nur an der Stelle');
+  const place = far.find((p) => parcelsIn(p.i, p.j, p.i + 60, p.j + 60).some((x) => x.price))!;
+  const offer = parcelsIn(place.i, place.j, place.i + 60, place.j + 60).find((x) => x.price)!;
+  assert.deepEqual(parcelById(offer.id), offer, 'Eine Kennung führt wieder zum selben Grundstück');
+  assert.equal(tileKind(offer.entry.i, offer.entry.j), 'sidewalk');
+  for (let k = 0; k < 40; k++) assert.equal(tileKind(place.i + k, place.j + 28), 'road', 'Die Stadt hat Strassen');
+  assert.ok(townPath(offer.entry, { i: offer.entry.i + 20, j: offer.entry.j }, isBlocked).length > 0, 'Auf dem Gehweg kommt man weiter');
+  assert.ok(decorIn(-2000, -2000, 2000, 2000).length > 0);
+  assert.equal(isBlocked(-90000, 0), true, 'Die Welt hat einen Rand');
+});
+
+test('Ein Grundstück draussen lässt sich kaufen, bebauen und betreten', () => {
+  const company = newCompany();
+  company.buildPoints = 5000;
+  const far = placesIn(-40 * REGION, -40 * REGION, 40 * REGION, 40 * REGION).filter((p) => p.id.startsWith('w'));
+  const lot = far.flatMap((p) => parcelsIn(p.i, p.j, p.i + 170, p.j + 170)).find((x) => x.kind === 'lot')!;
+  engine.townAction(company.id, lot.id, { action: 'buy' });
+  engine.townAction(company.id, lot.id, { action: 'build' });
+  const floor = engine.enterSite(company.id, lot.id);
+  assert.equal(floor, 100);
+  assert.equal(roomOf(company, floor).id, lot.locationId);
+});
+
+test('Auch am Rand der Welt ist ein Grundstück eindeutig und erreichbar', () => {
+  const edge = placesIn(265 * REGION, 265 * REGION, 280 * REGION, 280 * REGION).filter((p) => p.id.startsWith('w'));
+  assert.ok(edge.length > 20);
+  const parcel = edge.flatMap((p) => parcelsIn(p.i, p.j, p.i + 170, p.j + 170))[0];
+  assert.deepEqual(parcelById(parcel.id), parcel);
+  assert.ok(townPath(parcel.entry, { i: parcel.entry.i + 12, j: parcel.entry.j }, isBlocked).length > 0);
+  assert.ok(placesIn(-283 * REGION, -283 * REGION, 283 * REGION, 283 * REGION).length > 100_000, 'Über 100.000 Orte');
+});
+
+test('Eine Stadt bekommt beim ersten Besuch ihre Zufallszahl und behält sie', () => {
+  const company = newCompany();
+  engine.visitCity(company.id, 'paloalto');
+  const first = company.town.citySalts?.paloalto;
+  assert.ok(Number.isInteger(first) && first! > 0, 'Beim ersten Besuch wird eine Zahl gezogen');
+  engine.visitCity(company.id, 'paloalto');
+  assert.equal(company.town.citySalts?.paloalto, first, 'Beim zweiten Besuch ändert sich nichts');
+  const wild = placesIn(-40 * REGION, -40 * REGION, 40 * REGION, 40 * REGION).find((p) => p.id.startsWith('w'))!;
+  engine.visitCity(company.id, wild.id);
+  assert.ok((company.town.citySalts?.[wild.id] ?? 0) > 0, 'Auch Städte in der offenen Welt');
+  assert.throws(() => engine.visitCity(company.id, 'gibtsnicht'), /Diese Stadt gibt es nicht/);
 });

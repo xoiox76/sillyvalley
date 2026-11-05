@@ -1,5 +1,7 @@
 // Gründungsbildschirm: eine Idee, ein Startort, ein echtes Budget.
 
+import { chooseLanguage, languageSwitch } from './language.ts';
+import type { Language } from '../i18n/translate.ts';
 import { LOCATIONS, locationById } from '../../shared/catalog.ts';
 import type { CompanySummary, LocationId, SystemInfo } from '../../shared/types.ts';
 import { roomPreview } from '../world/world.ts';
@@ -26,6 +28,7 @@ export function renderStart(root: HTMLElement, onOpen: (id: string) => void): vo
       <header class="start-head">
         <h1 class="logo logo-big">Silly Valley</h1>
         <p class="start-claim">Firma gründen, KI-Agenten einstellen, Ergebnisse abnehmen.</p>
+        ${languageSwitch()}
       </header>
       ${companies.length
         ? html`<section class="start-section">
@@ -64,7 +67,7 @@ export function renderStart(root: HTMLElement, onOpen: (id: string) => void): vo
           <small>Deine Obergrenze für echten Verbrauch. Du kannst sie jederzeit anpassen.</small>
         </label>
         <label class="field"><span>Bestehendes Projekt einbinden (optional)</span>
-          <input name="projectDir" maxlength="500" autocomplete="off" spellcheck="false" placeholder="Vollständiger Pfad zu einem Ordner, zum Beispiel /Users/du/Projekte/meine-app" />
+          <input name="projectDir" maxlength="500" autocomplete="off" spellcheck="false" placeholder="Vollständiger Pfad zu einem Ordner, zum Beispiel /Pfad/zum/Projekt" />
           <small>Dein Team darf in diesem Ordner lesen und ändern, sonst nirgends außerhalb seines Arbeitsbereichs. Spielstand und Verbrauchsbuch bleiben außerhalb des Projekts.</small>
         </label>
         ${provider && !provider.available ? html`
@@ -83,6 +86,11 @@ export function renderStart(root: HTMLElement, onOpen: (id: string) => void): vo
   }
 
   inner.addEventListener('click', async (event) => {
+    const chosen = (event.target as HTMLElement).closest<HTMLElement>('[data-language]');
+    if (chosen) {
+      await chooseLanguage(chosen.dataset.language as Language);
+      return;
+    }
     const target = event.target as HTMLElement;
     const card = target.closest<HTMLElement>('[data-location]');
     if (card) {

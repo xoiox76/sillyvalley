@@ -2,18 +2,18 @@
 // Wohin eine Figur geht und was sie tut, leitet sich aus ihrem echten Zustand ab.
 
 import { DEFAULT_CEO, LOCATIONS, isProp, locationById, staffOf } from '../../shared/catalog.ts';
-import { withoutEszett } from '../ui/html.ts';
+import { withoutEszett, show } from '../ui/html.ts';
 import { noteEdge, noteLook } from '../../shared/board.ts';
-import { plotGap, townBackdrop } from './town.ts';
-import { parcelById } from '../../shared/town.ts';
+import { quotaClosedUntil } from '../../shared/quota.ts';
+import { drawTownBehind, drawTownInFront } from './town.ts';
 import { siteAt, siteBase, storeyOf, buildingAt, checkShaft, floorOf, isShaft, itemsOnFloor, roomOf, shaftLanding } from '../../shared/building.ts';
 import { noteTaker, wallNotes, type BoardNote } from '../../shared/board.ts';
 import {
   blockedEdges, blockedSet, checkDepartment, checkPlacement, findPath, footprint, inBounds, meetingDoor, meetingSeats, occupiedTiles, seatOf, standingTile,
   type Rect, type Seat, type Tile,
 } from '../../shared/layout.ts';
-import type { Agent, Company, Department, FurnitureKind, HelpRequest, PropKind, LiveKind, Meeting, PlacedItem, Rotation, Shaft } from '../../shared/types.ts';
-import { ROOM_HEIGHT, drawLiftDoors, drawLiftFrame, liftShell, type LiftFace, chairBack, chairBase, ceoTable, deskTable, drawScreen, furnitureSprite, glassSegment, meetingFloor, meetingTable, propSprite, type Sprite } from './art.ts';
+import type { Agent, Company, Department, FurnitureKind, HelpRequest, PropKind, LiveKind, Meeting, PlacedItem, PlanStatus, Rotation, Shaft } from '../../shared/types.ts';
+import { stairSprite, type StairMode, ROOM_HEIGHT, drawLiftDoors, drawLiftFrame, liftShell, type LiftFace, chairBack, chairBase, ceoTable, deskTable, drawScreen, furnitureSprite, glassSegment, meetingFloor, meetingTable, propSprite, type Sprite } from './art.ts';
 import { characterSprite, type Pose, type View } from './characters.ts';
 import { Pen, fillPoly, layer, line, rect, type Ctx, type Layer } from './pixel.ts';
 import { buildRoom, waterPattern, type Room, WALL_H } from './room.ts';
@@ -71,6 +71,8 @@ interface Actor {
   transit: { floor: number; target: Tile; landing: Tile; lift: LiftTrip | null; crossing?: boolean } | null;
   /** In der geschlossenen Kabine ist die Figur nicht zu sehen. */
   hidden: boolean;
+  /** Feierabend: Die Figur ist heimgegangen und nicht zu sehen. */
+  home: boolean;
 }
 
 type LiftPhase = 'walk' | 'press' | 'wait' | 'arrive' | 'open' | 'enter' | 'close' | 'ride' | 'openThere' | 'exit';
@@ -145,6 +147,8 @@ function bubbleFor(kind: LiveKind): Bubble | null {
 const isSeated = (actor: Actor) => (actor.goal.startsWith('seat:') || actor.goal.startsWith('tagung:')) && !actor.path.length && actor.pose !== 'walk';
 
 export interface WorldCallbacks {
+  /** Am Ende des Zooms soll es weiter hinaus gehen: aus dem Büro in die Stadt. */
+  onZoomedOut?(): void;
   onAgentClick(agentId: string): void;
   onTileHover(tile: Tile | null): void;
   onTileClick(tile: Tile): void;
@@ -174,6 +178,7 @@ export class World {
   private readonly rooms = new Map<string, Room>();
   private shownNotes = new Map<string, BoardNote>();
   private lifts = new Map<string, LiftState>();
+  private quota: PlanStatus | null = null;
   private notesPrimed = false;
   private readonly trips = new Map<string, BoardTrip>();
   private readonly onCeoKeyDown: (e: KeyboardEvent) => void;
@@ -219,7 +224,7 @@ export class World {
     this.canvas = document.createElement('canvas');
     this.canvas.className = 'world-canvas';
     this.canvas.setAttribute('role', 'img');
-    this.canvas.setAttribute('aria-label', 'Dein Büro');
+    this.canvas.setAttribute('aria-label', show('Dein Büro'));
     this.screen = this.canvas.getContext('2d')!;
     this.labels = document.createElement('div');
     this.labels.className = 'world-labels';
@@ -457,8 +462,9 @@ export class World {
 
   private useRoom(): void {
     const loc = roomOf(this.company!, this.viewFloor);
-    const key = `${loc.id}:${loc.w}x${loc.d}:${storeyOf(this.viewFloor) > 0 ? 'oben' : 'unten'}`;
-    if (!this.rooms.has(key)) this.rooms.set(key, buildRoom(loc, storeyOf(this.viewFloor), true));
+    const floors = buildingAt(this.company!.town, siteAt(this.company!, this.viewFloor).siteId).floors;
+    const key = `${loc.id}:${loc.w}x${loc.d}:${storeyOf(this.viewFloor)}/${floors}`;
+    if (!this.rooms.has(key)) this.rooms.set(key, buildRoom(loc, storeyOf(this.viewFloor), true, floors));
     const next = this.rooms.get(key)!;
     const resized = this.room && (this.room.width !== next.width || this.room.height !== next.height);
     this.room = next;
@@ -589,7 +595,7 @@ export class World {
       j = seat.tile.j + 0.5;
       floor = floorOf(desk);
     }
-    return { floor, transit: null, hidden: false, id: agent.id, i, j, path: [], view: 'front', flip: false, pose: 'stand', goal: '', nextWander: performance.now() + 2500 + Math.random() * 6000, atShelf: false, pause: null, lastScreen: { x: 0, y: 0 } };
+    return { floor, transit: null, hidden: false, home: false, id: agent.id, i, j, path: [], view: 'front', flip: false, pose: 'stand', goal: '', nextWander: performance.now() + 2500 + Math.random() * 6000, atShelf: false, pause: null, lastScreen: { x: 0, y: 0 } };
   }
 
   private resize(): void {
@@ -633,6 +639,10 @@ export class World {
 
   /** Stufenweise zoomen. Der Punkt unter der Maus bleibt dabei, wo er ist. */
   zoomBy(steps: number, at?: { x: number; y: number }): void {
+    if (steps < 0 && this.scale * (window.devicePixelRatio || 1) <= 1) {
+      this.callbacks.onZoomedOut?.();
+      return;
+    }
     const box = this.container.getBoundingClientRect();
     const sx = at ? at.x - box.left : box.width / 2;
     const sy = at ? at.y - box.top : box.height / 2;
@@ -1017,6 +1027,89 @@ export class World {
     }
   }
 
+  /** Einen Schritt weitergehen. true, solange die Figur unterwegs ist. */
+  private stepWalk(actor: Actor, dt: number): boolean {
+    if (actor.path.length) {
+      const next = actor.path[0];
+      const tx = next.i + 0.5;
+      const ty = next.j + 0.5;
+      const dx = tx - actor.i;
+      const dy = ty - actor.j;
+      const dist = Math.hypot(dx, dy);
+      const step = WALK_SPEED * dt;
+      if (dist <= step) {
+        actor.i = tx;
+        actor.j = ty;
+        actor.path.shift();
+      } else {
+        actor.i += (dx / dist) * step;
+        actor.j += (dy / dist) * step;
+      }
+      // +j läuft nach unten links, +i nach unten rechts
+      actor.view = dx < -0.01 || dy < -0.01 ? 'back' : 'front';
+      actor.flip = Math.abs(dx) > Math.abs(dy) ? dx > 0 : dy < 0;
+      actor.pose = 'walk';
+      return true;
+    }
+    return false;
+
+  }
+
+  /** Am Aufgang oder an der Haustür angekommen: Die Figur wechselt die Etage und geht dort weiter. */
+  private arriveTransit(actor: Actor, now: number): boolean {
+    // An der Treppe angekommen: Die Figur wechselt die Etage und geht dort weiter.
+    if (actor.transit) {
+      if (actor.transit.lift) {
+        actor.transit.lift.phase = 'press';
+        actor.transit.lift.at = now;
+        this.faceLift(actor, actor.transit.lift.shaft, true);
+        actor.pose = 'stand';
+        return true;
+      }
+      const { floor, target, crossing } = actor.transit;
+      const landing = crossing ? roomOf(this.company!, floor).door : actor.transit.landing;
+      actor.transit = null;
+      actor.floor = floor;
+      this.ctxFloor = floor;
+      actor.i = landing.i + 0.5;
+      actor.j = landing.j + 0.5;
+      this.goTo(actor, target, floor);
+      return true;
+    }
+    return false;
+  }
+
+  /** Das Kontingent ist leer: Wer nicht gerade arbeitet, geht heim. true, solange das so ist. */
+  private goesHome(actor: Actor, agent: Agent, now: number, dt: number): boolean {
+    const closed = agent.providerId === 'anthropic' && quotaClosedUntil(this.quota, Date.now()) !== null && !agent.live.runId;
+    if (!closed) {
+      if (actor.home) {
+        // Wieder da: Die Figur kommt durch die Haustür und geht an ihren Platz.
+        actor.home = false;
+        actor.hidden = false;
+        const door = roomOf(this.company!, siteBase(actor.floor)).door;
+        actor.i = door.i + 0.5;
+        actor.j = door.j + 0.5;
+        actor.goal = '';
+        actor.path = [];
+      }
+      return false;
+    }
+    if (actor.home) return true;
+    if (actor.pause) this.endPause(actor);
+    const ground = siteBase(actor.floor);
+    this.setGoal(actor, 'heim', this.onFloor(ground, () => this.location().door), ground);
+    if (this.stepWalk(actor, dt) || this.arriveTransit(actor, now)) return true;
+    actor.home = true;
+    actor.hidden = true;
+    actor.pose = 'stand';
+    return true;
+  }
+
+  setQuota(plan: PlanStatus | null | undefined): void {
+    this.quota = plan ?? null;
+  }
+
   private meetingFloor(agent: Agent): number {
     const help = this.helpOf(agent);
     if (help?.roomId) return floorOf(this.company!.placed.find((p) => p.id === help.roomId) ?? {});
@@ -1056,6 +1149,7 @@ export class World {
       this.liftStep(actor, actor.transit.lift, now);
       return;
     }
+    if (this.goesHome(actor, agent, now, dt)) return;
     const desk = this.deskOf(agent);
     const seat: Seat | null = desk ? seatOf(desk) : null;
     const deskFloor = desk ? floorOf(desk) : actor.floor;
@@ -1126,49 +1220,8 @@ export class World {
     // Sobald ein echter Lauf beginnt oder jemand gebraucht wird, ist die Pause vorbei.
     if (kind !== 'idle' && kind !== 'stopped' && actor.pause) this.endPause(actor);
 
-    // Gehen
-    if (actor.path.length) {
-      const next = actor.path[0];
-      const tx = next.i + 0.5;
-      const ty = next.j + 0.5;
-      const dx = tx - actor.i;
-      const dy = ty - actor.j;
-      const dist = Math.hypot(dx, dy);
-      const step = WALK_SPEED * dt;
-      if (dist <= step) {
-        actor.i = tx;
-        actor.j = ty;
-        actor.path.shift();
-      } else {
-        actor.i += (dx / dist) * step;
-        actor.j += (dy / dist) * step;
-      }
-      // +j läuft nach unten links, +i nach unten rechts
-      actor.view = dx < -0.01 || dy < -0.01 ? 'back' : 'front';
-      actor.flip = Math.abs(dx) > Math.abs(dy) ? dx > 0 : dy < 0;
-      actor.pose = 'walk';
-      return;
-    }
-
-    // An der Treppe angekommen: Die Figur wechselt die Etage und geht dort weiter.
-    if (actor.transit) {
-      if (actor.transit.lift) {
-        actor.transit.lift.phase = 'press';
-        actor.transit.lift.at = now;
-        this.faceLift(actor, actor.transit.lift.shaft, true);
-        actor.pose = 'stand';
-        return;
-      }
-      const { floor, target, crossing } = actor.transit;
-      const landing = crossing ? roomOf(this.company!, floor).door : actor.transit.landing;
-      actor.transit = null;
-      actor.floor = floor;
-      this.ctxFloor = floor;
-      actor.i = landing.i + 0.5;
-      actor.j = landing.j + 0.5;
-      this.goTo(actor, target, floor);
-      return;
-    }
+    if (this.stepWalk(actor, dt)) return;
+    if (this.arriveTransit(actor, now)) return;
 
     // Angekommen
     const atBoard = this.trips.get(actor.id);
@@ -1342,7 +1395,10 @@ export class World {
     for (let y = -128; y < this.lowH + 128; y += 128) {
       for (let x = -128; x < this.lowW + 128; x += 128) ctx.drawImage(this.water.canvas, x + shift, y);
     }
-    this.drawSurroundings(ctx, pen);
+    // Rund ums Büro liegt die echte Stadt, Feld für Feld in derselben Grösse.
+    const view = this.groundOfView();
+    const [cornerX, cornerY] = pen.pt(0, 0);
+    drawTownBehind(ctx, company, view.siteId, view.room.w, view.room.d, view.room.door.i, cornerX, cornerY, this.lowW, this.lowH);
     ctx.drawImage(room.base.canvas, this.offX, this.offY);
     for (const department of company.departments.filter((d) => floorOf(d) === this.viewFloor)) this.drawZone(ctx, pen, department, department.color, 0.22, false, department);
     for (const [id, el] of this.zoneLabels) {
@@ -1419,23 +1475,18 @@ export class World {
     items.sort((a, b) => a.depth - b.depth);
     for (const item of items) item.draw();
     ctx.drawImage(room.front.canvas, this.offX, this.offY);
-    // Nachbarhäuser vor dem Grundstück stehen auch vor dem Büro.
-    const surroundings = this.backdrop();
-    if (surroundings) {
-      // Sie enden am Umriss des Hauses: Was im Büro geschieht, muss immer zu sehen sein.
-      const ground = roomOf(company, siteBase(this.viewFloor));
-      const edge = 0.3;
-      const height = WALL_H + 8;
-      const outline = [pen.pt(-edge, -edge, height), pen.pt(ground.w + edge, -edge, height), pen.pt(ground.w + edge, -edge), pen.pt(ground.w + edge, ground.d + edge), pen.pt(-edge, ground.d + edge), pen.pt(-edge, ground.d + edge, height)];
-      ctx.save();
-      ctx.beginPath();
-      ctx.rect(0, 0, this.lowW, this.lowH);
-      outline.forEach(([x, y], index) => (index ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
-      ctx.closePath();
-      ctx.clip('evenodd');
-      this.blitTown(ctx, pen, surroundings.front.canvas, surroundings.x, surroundings.y, surroundings.zoom, ground.w, ground.d);
-      ctx.restore();
-    }
+    // Nachbarhäuser vor dem Grundstück stehen auch vor dem Büro. Sie enden aber an seinem Umriss: Was darin geschieht, muss zu sehen sein.
+    const edge = 0.3;
+    const height = WALL_H + 8;
+    const outline = [pen.pt(-edge, -edge, height), pen.pt(view.room.w + edge, -edge, height), pen.pt(view.room.w + edge, -edge), pen.pt(view.room.w + edge, view.room.d + edge), pen.pt(-edge, view.room.d + edge), pen.pt(-edge, view.room.d + edge, height)];
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(0, 0, this.lowW, this.lowH);
+    outline.forEach(([x, y], index) => (index ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
+    ctx.closePath();
+    ctx.clip('evenodd');
+    drawTownInFront(ctx, company, view.siteId, view.room.w, view.room.d, cornerX, cornerY, this.lowW, this.lowH);
+    ctx.restore();
 
     if (this.ghost) this.drawGhost(ctx, pen, this.ghost, tick);
 
@@ -1534,7 +1585,7 @@ export class World {
       this.roomLabels.set(meeting.id, el);
     }
     const text = `Besprechung läuft, Runde ${meeting.round} von ${meeting.maxRounds}`;
-    if (el.textContent !== withoutEszett(text)) el.textContent = withoutEszett(text);
+    if (el.textContent !== show(text)) el.textContent = show(text);
     el.style.transform = `translate(calc(${Math.round(x * this.scale)}px - 50%), calc(${Math.round(y * this.scale)}px - 100%))`;
   }
 
@@ -1546,6 +1597,13 @@ export class World {
     }
     if (item.kind === 'lift') {
       this.addLift(items, pen, item);
+      return;
+    }
+    if (item.kind === 'stairs') {
+      const storey = storeyOf(floorOf(item));
+      const floors = buildingAt(this.company!.town, siteAt(this.company!, floorOf(item)).siteId).floors;
+      const mode: StairMode = storey > 0 && storey < floors - 1 ? 'both' : storey > 0 ? 'down' : 'up';
+      items.push({ depth: item.i + 0.5 + item.j + 1, draw: () => this.drawSprite(ctx, stairSprite(mode), at()) });
       return;
     }
     if (isProp(item.kind)) {
@@ -1630,37 +1688,9 @@ export class World {
     line(ctx, sx, sy + 4, sx - 9, sy, '#5eeac0');
   }
 
-  private backdrop() {
-    const ground = roomOf(this.company!, siteBase(this.viewFloor));
-    return townBackdrop(this.company!, siteAt(this.company!, this.viewFloor).siteId, ground.w, ground.d, ground.door.i);
-  }
-
-  /** Zeichnet den sichtbaren Teil. Die ganze Stadt in jedem Bild zu vergrössern, wäre zu teuer. */
-  private blitTown(ctx: Ctx, pen: Pen, source: HTMLCanvasElement, x: number, y: number, zoom: number, w: number, d: number): void {
-    const site = parcelById(siteAt(this.company!, this.viewFloor).siteId)!;
-    const [cx, cy] = pen.pt(w / 2, d + plotGap(site, d, zoom));
-    const left = cx - x * zoom;
-    const top = cy - y * zoom;
-    const sx = Math.max(0, Math.floor(-left / zoom));
-    const sy = Math.max(0, Math.floor(-top / zoom));
-    const sw = Math.min(source.width - sx, Math.ceil(this.lowW / zoom) + 2);
-    const sh = Math.min(source.height - sy, Math.ceil(this.lowH / zoom) + 2);
-    if (sw <= 0 || sh <= 0) return;
-    ctx.imageSmoothingEnabled = false;
-    ctx.drawImage(source, sx, sy, sw, sh, left + sx * zoom, top + sy * zoom, sw * zoom, sh * zoom);
-  }
-
-  /** Rund ums Büro liegt die echte Stadt, ausgerichtet auf das eigene Grundstück. Sie ist abgedunkelt, damit das Büro vorn bleibt. */
-  private drawSurroundings(ctx: Ctx, pen: Pen): void {
-    const loc = this.location();
-    const backdrop = this.backdrop();
-    if (!backdrop) return;
-    const { image, zoom } = backdrop;
-    this.blitTown(ctx, pen, image.canvas, backdrop.x, backdrop.y, zoom, loc.w, loc.d);
-    rect(ctx, 0, 0, this.lowW, this.lowH, 'rgba(12, 22, 38, .16)');
-    // Das eigene Grundstück bleibt hell und scharf, es gehört zum Haus.
-    const [ox, oy] = pen.pt(0, 0);
-    ctx.drawImage(backdrop.plot.image.canvas, ox - backdrop.plot.ox, oy - backdrop.plot.oy);
+  private groundOfView() {
+    const room = roomOf(this.company!, siteBase(this.viewFloor));
+    return { room, siteId: siteAt(this.company!, this.viewFloor).siteId };
   }
 
   /** Eine Zettelfarbe je echtem Auftrag. So zeigt auch der Raum den Stand der Firma. */
@@ -1783,7 +1813,7 @@ export class World {
     // Im Raum steht immer nur die letzte Aussage über den Köpfen. Alles andere würde die Figuren verdecken.
     const lastSpeaker = this.company!.meetings?.find((m) => m.status === 'running' && m.participantIds.includes(agent.id))?.turns.at(-1)?.agentId;
     const text = kind === 'idle' || (kind === 'meeting' && lastSpeaker !== agent.id) ? '' : agent.live.detail;
-    if (detail.textContent !== withoutEszett(text)) detail.textContent = withoutEszett(text);
+    if (detail.textContent !== show(text)) detail.textContent = show(text);
     el.dataset.kind = kind;
     el.classList.toggle('selected', agent.id === this.selected);
     el.style.transform = `translate(calc(${Math.round(x * this.scale)}px - 50%), calc(${Math.round(y * this.scale)}px - 100%))`;

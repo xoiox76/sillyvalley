@@ -7,7 +7,8 @@ import { FxSource } from './fx.ts';
 import { createApi, createArtifactHandler } from './http.ts';
 import { createAnthropicProvider } from './providers/anthropic.ts';
 import { createCompatibleProvider, createRouter } from './providers/compatible.ts';
-import { Settings } from './settings.ts';
+import { createCodexProvider } from './providers/codex.ts';
+import { SUBSCRIPTION_ID, Settings } from './settings.ts';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const DATA = process.env.SILLYVALLEY_DATA ?? path.join(ROOT, 'data');
@@ -18,7 +19,16 @@ const UNLIMITED_BUILD = process.env.SILLYVALLEY_BAUPUNKTE === 'unendlich';
 const PRODUCTION = process.env.NODE_ENV === 'production';
 
 const settings = new Settings(DATA);
-const provider = createRouter(createAnthropicProvider(process.env.SILLYVALLEY_AGENT_BIN), createCompatibleProvider((id) => settings.resolve(id)), (id) => id.includes(':'));
+const codex = createCodexProvider((id) => id.slice(SUBSCRIPTION_ID.length + 1));
+const provider = createRouter(createAnthropicProvider(process.env.SILLYVALLEY_AGENT_BIN, settings.getAnthropicKey), [
+  { handles: (id) => id.startsWith(`${SUBSCRIPTION_ID}:`), provider: codex },
+  { handles: (id) => id.includes(':'), provider: createCompatibleProvider((id) => settings.resolve(id)) },
+]);
+// Mit der Test-Attrappe bleibt alles lokal, auch ein Abo auf dem Rechner wird nicht benutzt.
+if (!process.env.SILLYVALLEY_AGENT_BIN) {
+  const info = await codex.detect();
+  if (info.available) settings.useSubscription({ account: info.account, version: info.version });
+}
 const engine = new Engine(DATA, provider, new FxSource(DATA), ARTIFACT_PORT, UNLIMITED_BUILD);
 engine.settings = settings;
 await engine.init();

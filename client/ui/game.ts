@@ -1,5 +1,8 @@
 // Spielbildschirm: verbindet Server-Stand, Welt und Bedienung.
 
+import { chooseLanguage } from './language.ts';
+import type { Language } from '../i18n/translate.ts';
+import { locale } from '../i18n/translate.ts';
 import { marked } from 'marked';
 import { DEFAULT_CEO, LOOK_OPTIONS, NAME_IDEAS, ROLES, RULES, isProp, roleById, setExtraModels } from '../../shared/catalog.ts';
 import { checkDepartment, checkPlacement, rectFromCorners, type Tile } from '../../shared/layout.ts';
@@ -7,10 +10,11 @@ import { ROLE_TEMPLATE, parseRole, roleToMarkdown, withRoleColor } from '../../s
 import { siteAt, siteBase, storeyOf, buildingAt, checkShaft, floorOf, isShaft, itemsOnFloor, roomOf } from '../../shared/building.ts';
 import type { Agent, BoardItem, FurnitureKind, ProjectAgent, LocationId, Look, PlacedItem, Rotation, Snapshot } from '../../shared/types.ts';
 import { parcelById } from '../../shared/town.ts';
+import type { City } from '../../shared/town.ts';
 import { TownView } from '../world/town.ts';
 import { World } from '../world/world.ts';
 import { api, type FileEntry } from './api.ts';
-import { html, morph, type Safe } from './html.ts';
+import { html, morph, type Safe, show } from './html.ts';
 import {
   buildPanel, suggestedLimit, contractModal, departmentModal, departmentOfAgent, financePanel, laptopModal, hireModal, noteModal, teamModal, liveNote, mandateModal, meetingModal, meetingPanel, notices, orderModal,
   projectsPanel, roomChips, teamPanel, topBar, townCard, townChips, viewerModal,
@@ -52,8 +56,8 @@ export function renderGame(root: HTMLElement, companyId: string, onLeave: () => 
         <aside class="panel" id="panel" hidden></aside>
       </div>
       <footer class="navbar">
-        <nav class="tabs" aria-label="Bereiche">
-          ${TABS.map((t) => `<button class="tab" data-action="tab" data-id="${t.id}"><span class="tab-icon tab-icon-${t.icon}" aria-hidden="true"></span>${t.label}</button>`).join('')}
+        <nav class="tabs" aria-label="${show('Bereiche')}">
+          ${TABS.map((t) => `<button class="tab" data-action="tab" data-id="${t.id}"><span class="tab-icon tab-icon-${t.icon}" aria-hidden="true"></span>${show(t.label)}</button>`).join('')}
         </nav>
         <div class="live-slot" id="live"></div>
       </footer>
@@ -90,6 +94,7 @@ export function renderGame(root: HTMLElement, companyId: string, onLeave: () => 
   let confirmFire: string | null = null;
   let selectedNote: string | null = null;
   let viewFloor = 0;
+  let townCity: City | null = null;
   let ceoSeated = false;
   let toasts: { id: string; level: string; text: string }[] = [];
   const seenNotices = new Set<string>();
@@ -109,6 +114,11 @@ export function renderGame(root: HTMLElement, companyId: string, onLeave: () => 
     keyboardBlocked() {
       const active = document.activeElement as HTMLElement | null;
       return modal !== null || build !== null || Boolean(active?.closest('input, textarea, select'));
+    },
+    onZoomedOut() {
+      if (modal || build || outside) return;
+      goOutside();
+      town.zoomToEdge();
     },
     onAgentClick(id) {
       selectedAgent = id;
@@ -208,6 +218,12 @@ export function renderGame(root: HTMLElement, companyId: string, onLeave: () => 
   const town = new TownView(els.town, {
     onParcel(id) {
       parcelId = id;
+      render();
+    },
+    onCity(city) {
+      townCity = city;
+      // Wer eine Stadt zum ersten Mal betritt, legt ihr Aussehen fest. Danach bleibt es.
+      if (city && snap && snap.company.town.citySalts?.[city.id] === undefined) api.visitCity(companyId, city.id).catch(fail);
       render();
     },
     onEnter(parcelId) {
@@ -519,7 +535,7 @@ export function renderGame(root: HTMLElement, companyId: string, onLeave: () => 
       });
       selectedNote = null;
       selectedOrder = order.id;
-      toast('info', `${agent.name} holt "${note.title}" von der Tafel. Limit: ${limitEur.toLocaleString('de-DE')} €.`);
+      toast('info', `${agent.name} holt "${note.title}" von der Tafel. Limit: ${limitEur.toLocaleString(locale())} €.`);
       render();
     } catch (err) {
       fail(err);
@@ -549,10 +565,10 @@ export function renderGame(root: HTMLElement, companyId: string, onLeave: () => 
 
   /** Liest eine Markdown-Datei im Browser und gibt Titel und Text zurück. Die erste Überschrift wird zum Namen. */
   async function readSkillFile(file: File): Promise<{ title: string; instruction: string }> {
-    if (file.size > RULES.skillTextMax * 4) throw new Error(`Die Datei ist zu groß: höchstens ${RULES.skillTextMax.toLocaleString('de-DE')} Zeichen, denn sie wird bei jedem Lauf mitgelesen.`);
+    if (file.size > RULES.skillTextMax * 4) throw new Error(`Die Datei ist zu groß: höchstens ${RULES.skillTextMax.toLocaleString(locale())} Zeichen, denn sie wird bei jedem Lauf mitgelesen.`);
     const instruction = (await file.text()).trim();
     if (!instruction) throw new Error('Die Datei ist leer.');
-    if (instruction.length > RULES.skillTextMax) throw new Error(`Die Datei ist zu lang: ${instruction.length.toLocaleString('de-DE')} Zeichen, höchstens ${RULES.skillTextMax.toLocaleString('de-DE')}.`);
+    if (instruction.length > RULES.skillTextMax) throw new Error(`Die Datei ist zu lang: ${instruction.length.toLocaleString(locale())} Zeichen, höchstens ${RULES.skillTextMax.toLocaleString(locale())}.`);
     const heading = instruction.match(/^#\s+(.+)$/m)?.[1]?.trim();
     return { title: (heading || file.name.replace(/\.\w+$/, '')).slice(0, 60), instruction };
   }
@@ -869,6 +885,12 @@ export function renderGame(root: HTMLElement, companyId: string, onLeave: () => 
       }
       render();
     },
+    async 'set-language'(el) {
+      await chooseLanguage(el.dataset.language as Language);
+    },
+    'town-map'() {
+      town.toggleMap();
+    },
     'open-note'() {
       modal = { type: 'note', draft: { error: '', busy: false } };
       render();
@@ -1118,6 +1140,9 @@ export function renderGame(root: HTMLElement, companyId: string, onLeave: () => 
       modal.draft.browserFrom = null;
       if (modal.draft.app === 'dateien' || modal.draft.app === 'browser') refreshFiles();
       render();
+    },
+    async 'anthropic-key-remove'() {
+      await api.setAnthropicKey(null).catch(fail);
     },
     'connection-kind'(el) {
       if (modal?.type !== 'files') return;
@@ -1504,6 +1529,8 @@ export function renderGame(root: HTMLElement, companyId: string, onLeave: () => 
       } catch (err) {
         fail(err);
       }
+    } else if (kind === 'anthropic-key') {
+      await api.setAnthropicKey(String(data.get('apiKey') ?? '')).then(() => form.reset()).catch(fail);
     } else if (kind === 'connection') {
       try {
         await api.addConnection({ kind: data.get('kind'), apiKey: data.get('apiKey'), baseUrl: data.get('baseUrl'), label: data.get('label') });
@@ -1771,7 +1798,7 @@ export function renderGame(root: HTMLElement, companyId: string, onLeave: () => 
     els.world.hidden = outside;
     els.town.hidden = !outside;
     const parcel = parcelId ? parcelById(parcelId) ?? null : null;
-    morph(els.overlay, html`${outside ? townChips() : roomChips(snap, viewFloor, ceoSeated)}${outside ? townCard(snap, parcel) : null}${disconnected ? html`<div class="stale" role="alert">Keine Verbindung zum Server.</div>` : null}`);
+    morph(els.overlay, html`${outside ? townChips(townCity) : roomChips(snap, viewFloor, ceoSeated)}${outside ? townCard(snap, parcel) : null}${disconnected ? html`<div class="stale" role="alert">Keine Verbindung zum Server.</div>` : null}`);
     root.querySelectorAll<HTMLElement>('.tab').forEach((button) => {
       const on = button.dataset.id === tab;
       button.classList.toggle('active', on);
@@ -1822,6 +1849,7 @@ export function renderGame(root: HTMLElement, companyId: string, onLeave: () => 
     disconnected = false;
     if (first) refreshProjectAgents();
     world.setCompany(next.company);
+    world.setQuota(next.system.provider.billing === 'api' ? null : next.system.plan);
     town.setCompany(next.company);
     for (const notice of next.company.notices) {
       if (seenNotices.has(notice.id)) continue;

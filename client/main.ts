@@ -2,6 +2,9 @@ import '@fontsource/vt323/latin-400.css';
 import './styles.css';
 import { renderGame } from './ui/game.ts';
 import { renderStart } from './ui/start.ts';
+import { setDictionary, setLanguage } from './i18n/translate.ts';
+import { en } from './i18n/en.ts';
+import { api } from './ui/api.ts';
 
 const root = document.querySelector<HTMLElement>('#app')!;
 let cleanup: (() => void) | null = null;
@@ -22,4 +25,5 @@ function route(): void {
 }
 
 window.addEventListener('hashchange', route);
-route();
+setDictionary(en);
+api.language().then(({ language }) => setLanguage(language)).catch(() => setLanguage('en')).finally(route);

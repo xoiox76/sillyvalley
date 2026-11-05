@@ -3,7 +3,7 @@
 
 import type { LocationInfo } from '../../shared/catalog.ts';
 import type { LocationId } from '../../shared/types.ts';
-import { Pen, darken, fillPoly, hash2, layer, lighten, line, rect, seeded, tri, type Layer } from './pixel.ts';
+import { Pen, darken, fillPoly, hash2, layer, lighten, line, rect, seeded, tri, type Layer, type Faces } from './pixel.ts';
 import { INK } from './art.ts';
 
 export const WALL_H = 56;
@@ -34,6 +34,14 @@ interface Theme {
 }
 
 const frac = (n: number) => n - Math.floor(n);
+
+/** Mischt einen Boden mit Parkettbraun. */
+function toParquet(hex: string): string {
+  const n = parseInt(hex.slice(1), 16);
+  const mix = (shift: number, target: number) => Math.round(((n >> shift) & 255) * 0.5 + target * 0.5);
+  const parquet = [0xb0, 0x7d, 0x4f];
+  return `#${[mix(16, parquet[0]), mix(8, parquet[1]), mix(0, parquet[2])].map((c) => c.toString(16).padStart(2, '0')).join('')}`;
+}
 
 const woodFloor = (i: number, j: number) => {
   const plank = Math.floor(j * 3);
@@ -247,13 +255,19 @@ function sunlight(id: LocationId, i: number, j: number): number {
 }
 
 /** grounded: Das Haus steht auf seinem Grundstück in der Stadt, ebenerdig und ohne eigene Insel. */
-export function buildRoom(loc: LocationInfo, level = 0, grounded = false): Room {
+/** Höhe einer Etage: Wand, Decke und Schwelle. */
+const STOREY_H = WALL_H + 4;
+
+export function buildRoom(loc: LocationInfo, level = 0, grounded = false, floors = 1): Room {
   const theme = THEMES[loc.id];
   const { w: W, d: D } = loc;
+  // Über dem Raum stehen die oberen Etagen, unter ihm das Erdgeschoss. Beide gehören zum Bild.
+  const topExtra = Math.max(0, floors - 1 - level) * STOREY_H;
+  const bottomExtra = Math.max(0, level) * STOREY_H;
   const width = (W + D) * 16 + MARGIN * 2;
-  const height = (W + D) * 8 + WALL_H + MARGIN + 26;
+  const height = (W + D) * 8 + WALL_H + MARGIN + 26 + topExtra + bottomExtra;
   const ox = D * 16 + MARGIN;
-  const oy = WALL_H + 22;
+  const oy = WALL_H + 22 + topExtra;
   const base = layer(width, height);
   const front = layer(width, height);
   const pen = new Pen(base.ctx, ox, oy);
@@ -310,7 +324,8 @@ export function buildRoom(loc: LocationInfo, level = 0, grounded = false): Room 
       const near = Math.min(i, j);
       const corner = near < 1.3 ? (1.3 - near) * 0.17 : 0;
       const sun = sunlight(loc.id, i, j);
-      const color = theme.floor(i, j);
+      // Im Obergeschoss liegt Parkett statt des Erdgeschoss-Bodens, damit man sofort sieht, dass man oben ist.
+      const color = level > 0 ? toParquet(theme.floor(i, j)) : theme.floor(i, j);
       paint(x, y, sun > 0 ? lighten(darken(color, corner * 0.6), sun) : corner > 0 ? darken(color, corner) : color);
     }
   }
@@ -406,6 +421,29 @@ export function buildRoom(loc: LocationInfo, level = 0, grounded = false): Room 
   // Fensterbänder in den Außenseiten
   for (let u = 18; u < W * 16 - 18; u += 48) fp.faceJ(0, D + THICK, 0, u, 3, 30, 6, '#3e4a5a');
   for (let u = 18; u < D * 16 - 18; u += 48) fp.faceI(W + THICK, 0, 0, u, 3, 30, 6, '#343f4e');
+  // Andere Etagen, von außen: Das Erdgeschoss liegt unter dem Raum, die oberen Etagen darüber.
+  // Die oberen sind halb durchsichtig, damit man weiter in den eigenen Raum sieht.
+  const facade = (z: number, h: number, color: Faces) => {
+    fp.box(W, -THICK, z, THICK, D + THICK * 2, h, color);
+    fp.box(-THICK, D, z, W + THICK, THICK, h, color);
+    for (let u = 18; u < W * 16 - 18; u += 48) fp.faceJ(0, D + THICK, z, u, 16, 30, 16, '#3e4a5a');
+    for (let u = 18; u < D * 16 - 18; u += 48) fp.faceI(W + THICK, 0, z, u, 16, 30, 16, '#343f4e');
+  };
+  for (let s = 0; s < level; s++) facade(-(level - s) * STOREY_H, STOREY_H - 4, tri(theme.frontFace, 0.1));
+  // Obere Etagen: Die Rückwände stehen voll da. Die Vorderseite ist aufgeschnitten und zeigt nur den Deckenschnitt,
+  // so bleibt der eigene Raum sichtbar.
+  const cut = '#8a7f72';
+  for (let s = level + 1; s < floors; s++) {
+    const z = WALL_H + 4 + (s - level - 1) * STOREY_H;
+    const wall = tri(theme.frontFace, 0.14);
+    pen.box(-THICK, -THICK, z, W + THICK * 2, THICK, STOREY_H - 4, wall);
+    pen.box(-THICK, -THICK, z, THICK, D + THICK * 2, STOREY_H - 4, wall);
+    for (let u = 18; u < W * 16 - 18; u += 48) pen.faceJ(0, 0, z, u, 16, 30, 16, '#3e4a5a');
+    for (let u = 18; u < D * 16 - 18; u += 48) pen.faceI(0, 0, z, u, 16, 30, 16, '#343f4e');
+    // Deckenschnitt: die Stärke der Decke an der offenen Vorderseite.
+    fp.box(W, -THICK, z - 4, THICK, D + THICK * 2, 4, tri(cut, 0.14));
+    fp.box(-THICK, D, z - 4, W + THICK, THICK, 4, tri(cut, 0.14));
+  }
   fp.box(W - 0.06, -THICK, 0, THICK + 0.1, THICK + 0.16, FRONT_H + 6, pillar);
   fp.box(-THICK, D - 0.06, 0, THICK + 0.16, THICK + 0.1, FRONT_H + 6, pillar);
   fp.box(W - 0.06, D - 0.06, 0, THICK + 0.1, THICK + 0.1, FRONT_H + 6, pillar);

@@ -90,3 +90,14 @@ test('Rohprotokolle sind nur über gültige Lauf-Kennungen erreichbar', async ()
   const res = await fetch(`${gameUrl}/api/companies/${companyId}/runs/..%2F..%2Fcompany/log`);
   assert.equal(res.status, 404);
 });
+
+test('Die Sprache ist Englisch, bis jemand Deutsch wählt', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sprache-'));
+  const { Settings } = await import('../server/settings.ts');
+  const settings = new Settings(dir);
+  assert.equal(settings.language, 'en');
+  settings.setLanguage('de');
+  assert.equal(new Settings(dir).language, 'de', 'Die Wahl bleibt erhalten');
+  assert.throws(() => settings.setLanguage('fr'));
+  fs.rmSync(dir, { recursive: true, force: true });
+});

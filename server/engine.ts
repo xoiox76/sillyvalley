@@ -2,8 +2,9 @@
 // mit einer klaren Begründung abgewiesen oder als echter Agenten-Lauf ausgeführt.
 
 import { execFileSync } from 'node:child_process';
+import { quotaClosedUntil } from '../shared/quota.ts';
 import * as git from './git.ts';
-import { randomUUID } from 'node:crypto';
+import { randomInt, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { DEFAULT_CEO, LOOK_OPTIONS, DEPARTMENT_COLORS, FURNITURE, LOCATIONS, isProp, staffOf, MODELS, ROLES, RULES, SKILLS, commandRisks, furnitureByKind, locationById, modelById, roleById, skillById } from '../shared/catalog.ts';
@@ -11,7 +12,7 @@ import type { Settings } from './settings.ts';
 import { openSprint, scrumMaster, sprintCommitted, sprintRows } from '../shared/scrum.ts';
 import { checkDepartment, checkPlacement, deskDepartment } from '../shared/layout.ts';
 import { SITE_STEP, baseFloorOf, siteAt, storeyOf, EXTEND_COST, SHAFT_COST, buildLimits, buildingAt, checkShaft, floorCost, floorOf, isShaft, itemsOnFloor, roomAt, roomOf, shaftLanding } from '../shared/building.ts';
-import { HOME_ROOMS, parcelById, parcelOfLocation, startTown } from '../shared/town.ts';
+import { CITIES, HOME_ROOMS, parcelById, parcelOfLocation, placeById, startTown } from '../shared/town.ts';
 import type {
   CompanyRepo, OrderGit,
   Sprint,
@@ -21,7 +22,7 @@ import type {
 import { emptyUsage } from '../shared/types.ts';
 import type { FxSource } from './fx.ts';
 import {
-  DECISIONS_FILE, ORDER_STATE, parsePlanning, planningPrompt, planningSchema, retroNotes, agentProfile, checkPrompt, commandFeedback, continuePrompt, contractText, decisionEntry, interviewPrompt, jobUpdate, managePrompt, manageSchema, mandateFile, meetingPrompt,
+  DECISIONS_FILE, languageRule, ORDER_STATE, parsePlanning, planningPrompt, planningSchema, retroNotes, agentProfile, checkPrompt, commandFeedback, continuePrompt, contractText, decisionEntry, interviewPrompt, jobUpdate, managePrompt, manageSchema, mandateFile, meetingPrompt,
   meetingProtocol, meetingSchema, parseMeetingTurn, parsePlan, parseVerdict, planPrompt, reworkPrompt, revisionPrompt, speakingOrder, stageLabel,
   verdictReport, verdictSchema, workPrompt, type Briefing, HANDOVER_RULES, NOTE_RULES, colleagueLine, handoverDeniedNote, handoverNote, helpFeedback, helpPrompt, helpRules,
 } from './prompts.ts';
@@ -76,6 +77,7 @@ export class Engine {
   private providerInfo: ProviderInfo;
   private fxNow: Fx = { eurPerUsd: 1, date: '', source: 'ersatzwert' };
   private plan: PlanStatus | null = null;
+  private quotaTimer: NodeJS.Timeout | null = null;
   /** Agenten, deren Lauf gerade anläuft. So kann keine Stufe dazwischenrutschen. */
   private starting = new Set<string>();
   /** Nach dem Herunterfahren schreibt kein nachlaufender Timer (Fertig-Anzeige, Übergabe) mehr auf die Platte. */
@@ -108,6 +110,7 @@ export class Engine {
     } catch {
       // Noch kein Kontingentstand bekannt
     }
+    this.scheduleQuotaWake();
     for (const entry of fs.readdirSync(this.companiesDir(), { withFileTypes: true })) {
       if (!entry.isDirectory()) continue;
       try {
@@ -421,7 +424,7 @@ export class Engine {
   }
 
   system(): SystemInfo {
-    return { connections: this.settings?.views() ?? [], extraModels: this.settings?.models() ?? [], provider: this.providerInfo, fx: this.fxNow, plan: this.plan, artifactPort: this.artifactPort, unlimitedBuild: this.unlimitedBuild };
+    return { subscriptions: this.settings?.subscriptions() ?? [], anthropicKeyEnd: this.settings?.anthropicKeyEnd() ?? null, connections: this.settings?.views() ?? [], extraModels: this.settings?.models() ?? [], provider: this.providerInfo, fx: this.fxNow, plan: this.plan, artifactPort: this.artifactPort, unlimitedBuild: this.unlimitedBuild };
   }
 
   async refreshSystem(): Promise<SystemInfo> {
@@ -1053,14 +1056,14 @@ export class Engine {
       if (order.status !== 'running') continue;
       const stage = order.stages[order.stageIndex];
       // Solange über einen Befehl nicht entschieden ist, geht die Stufe nicht weiter.
-      if (stage.status === 'waiting' && !order.commandId && !order.helpId && !this.busy(company, stage.agentId)) await this.startStage(company, order, stage);
+      if (stage.status === 'waiting' && !order.commandId && !order.helpId && !this.busy(company, stage.agentId) && !this.restingUntil(this.agentOf(company, stage.agentId))) await this.startStage(company, order, stage);
     }
     await this.pumpHelps(company);
     await this.deliverChatCommands(company);
     for (const meeting of company.meetings) {
       if (meeting.status !== 'running' || meeting.turnActive) continue;
       const speaker = speakingOrder(meeting)[meeting.speakerIndex];
-      if (!this.busy(company, speaker)) await this.startMeetingTurn(company, meeting, speaker);
+      if (!this.busy(company, speaker) && !this.restingUntil(this.agentOf(company, speaker))) await this.startMeetingTurn(company, meeting, speaker);
     }
     this.touch(company);
   }
@@ -1288,6 +1291,28 @@ export class Engine {
     this.refreshParticipants(company, meeting);
     await this.pump(company);
     return meeting;
+  }
+
+  /* ---------- Kontingent ---------- */
+
+  /** Wer übers Abo arbeitet, hat Feierabend, solange dessen Kontingent leer ist. Wer über einen Schlüssel arbeitet, nicht. */
+  private restingUntil(agent: Agent): number | null {
+    if (agent.providerId !== 'anthropic' || this.providerInfo.billing === 'api') return null;
+    return quotaClosedUntil(this.plan, Date.now());
+  }
+
+  private scheduleQuotaWake(): void {
+    if (this.quotaTimer) clearTimeout(this.quotaTimer);
+    const until = quotaClosedUntil(this.plan, Date.now());
+    if (!until) return;
+    this.quotaTimer = setTimeout(() => {
+      // Wartende Stufen laufen von selbst weiter, und alle Spielstände erfahren, dass wieder gearbeitet wird.
+      for (const company of this.companies.values()) {
+        this.touch(company);
+        this.pump(company).catch((err) => console.error(err));
+      }
+    }, Math.min(until - Date.now() + 1000, 2_000_000_000));
+    this.quotaTimer.unref();
   }
 
   /* ---------- Repo ---------- */
@@ -1894,7 +1919,7 @@ export class Engine {
   /** Startet Antworten, sobald der Kollege frei ist, und bringt fertige Antworten zu dem, der im Gespräch gefragt hat. */
   private async pumpHelps(company: Company): Promise<void> {
     for (const help of company.helps) {
-      if (help.status === 'queued' && !this.busy(company, help.toId) && !this.busy(company, help.fromId)) await this.startHelp(company, help);
+      if (help.status === 'queued' && !this.busy(company, help.toId) && !this.busy(company, help.fromId) && !this.restingUntil(this.agentOf(company, help.toId))) await this.startHelp(company, help);
       if (help.status !== 'queued' && help.status !== 'running' && !help.delivered && !help.orderId && !this.busy(company, help.fromId)) await this.deliverHelp(company, help);
     }
   }
@@ -2576,6 +2601,18 @@ export class Engine {
     this.touch(company);
   }
 
+  /** Eine Stadt zum ersten Mal betreten: Ihr Aussehen wird zufällig gezogen und danach festgehalten. */
+  visitCity(companyId: string, cityId: string): void {
+    const company = this.require(companyId);
+    const known = CITIES.some((c) => c.id === cityId) || Boolean(placeById(cityId));
+    if (!known) throw new GameError('Diese Stadt gibt es nicht.', 404);
+    const { town } = company;
+    town.citySalts ??= {};
+    if (town.citySalts[cityId] !== undefined) return;
+    town.citySalts[cityId] = randomInt(1, 2_000_000_000);
+    this.touch(company);
+  }
+
   /** Direkt umziehen: Ein noch nicht gemieteter Laden wird dabei gemietet. Die Stadtkarte nutzt townAction. */
   moveCompany(companyId: string, locationId: LocationId): void {
     const company = this.require(companyId);
@@ -2759,6 +2796,8 @@ export class Engine {
     if (company.projectDir && !fs.existsSync(company.projectDir)) {
       throw new GameError(`Der Projektordner ${company.projectDir} ist nicht mehr da. Ohne ihn startet kein Lauf.`);
     }
+    const resting = this.restingUntil(agent);
+    if (resting) throw new GameError(`${agent.name} hat Feierabend: Das Kontingent ist bis ${new Date(resting).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })} leer.`);
     if (company.repo && !spec.orderId) this.syncRead(company);
     this.starting.add(agent.id);
     let fx: Fx;
@@ -2793,7 +2832,7 @@ export class Engine {
     const before = snapshotFiles(roots);
     const handle = this.provider.start(
       {
-        cwd: roots.workspace, prompt: spec.prompt, systemPrompt: agentProfile(company, agent), model: agent.modelId,
+        cwd: roots.workspace, prompt: spec.prompt, systemPrompt: `${agentProfile(company, agent)}\n\n${languageRule(this.settings?.language ?? 'en')}`, model: agent.modelId,
         sessionId: agent.sessionId, resume: agent.sessionStarted, limitUsd, sessionCostBefore: agent.sessionCostUsd, webAccess: Boolean(spec.webAccess),
         readOnly: Boolean(spec.readOnly) || Boolean(agent.origin?.readOnly), extraDirs: roots.projectDir ? [roots.projectDir] : [],
         jsonSchema: spec.jsonSchema ?? null, structuredLabel: spec.structuredLabel, rawLogPath: this.rawLogOf(company.id, run.id), timeoutMs: RULES.runTimeoutMs,
@@ -2842,6 +2881,7 @@ export class Engine {
         break;
       case 'plan':
         this.plan = event.plan;
+        this.scheduleQuotaWake();
         try {
           fs.writeFileSync(path.join(this.dataDir, 'plan.json'), JSON.stringify(event.plan));
         } catch {

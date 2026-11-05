@@ -1,5 +1,7 @@
 // Alle Ansichten als reine Funktionen des Spielstands. Aktionen laufen über data-action in game.ts.
 
+import { languageSwitch } from './language.ts';
+import { locale } from '../i18n/translate.ts';
 import {
   DEFAULT_CEO, FURNITURE, isProp, staffOf, LOOK_OPTIONS, MODELS, PRICES_AS_OF, PROVIDERS, ROLES, RULES, SKILLS, costFromUsage, furnitureByKind,
   BASE_CONTEXT_TOKENS, agentTitle, estimateStepUsd, estimateTokensOfChars, locationById, modelById, roleById, skillById, skillTitle,
@@ -7,12 +9,13 @@ import {
 import { deskDepartment } from '../../shared/layout.ts';
 import { NOTE_COLORS, boardNotes, noteLook, roleColor, type BoardNote } from '../../shared/board.ts';
 import { colorInText } from '../../shared/roleMarkdown.ts';
+import { quotaClosedUntil } from '../../shared/quota.ts';
 import { ROADMAP_PHASES, roadmapRows } from '../../shared/roadmap.ts';
 import { CONNECTION_KINDS, OPENAI_PRICES_AS_OF, connectionKind } from '../../shared/providers.ts';
 import { SPRINT_COLUMNS, openSprint, scrumMaster, sprintCommitted, sprintRows } from '../../shared/scrum.ts';
 import { baseFloorOf, siteAt, siteBase, EXTEND_COST, SHAFT_COST, buildLimits, buildingAt, floorCost, floorName, floorOf, isShaft, roomAt, roomOf } from '../../shared/building.ts';
 import type { Agent, BoardItem, CommandRequest, Company, CompanyRole, Contract, CustomSkill, Department, LiveKind, Look, Mandate, Meeting, Order, Pool, ProjectAgent, Proposal, Run, Snapshot, Sprint, Stage, StageKind, Team } from '../../shared/types.ts';
-import { HOME_ROOMS, type Parcel } from '../../shared/town.ts';
+import { HOME_ROOMS, TOWN_NAME, type City, type Parcel } from '../../shared/town.ts';
 import { portraitUrl } from '../world/characters.ts';
 import type { FileEntry } from './api.ts';
 import { api } from './api.ts';
@@ -197,7 +200,7 @@ function meter(value: number, max: number, label: string): Safe {
 
 /* ---------- Kontext und Kosten ---------- */
 
-const tokenCount = (n: number) => (n >= 1_000_000 ? `${(n / 1_000_000).toLocaleString('de-DE', { maximumFractionDigits: 1 })} Mio.` : n.toLocaleString('de-DE'));
+const tokenCount = (n: number) => (n >= 1_000_000 ? `${(n / 1_000_000).toLocaleString(locale(), { maximumFractionDigits: 1 })} Mio.` : n.toLocaleString(locale()));
 
 /** Belegung: gemessen, sobald der Agent einmal gelaufen ist, sonst die gemessene Grundlast eines neuen Agenten. */
 const agentContextTokens = (agent: Agent) => agent.context?.tokens ?? BASE_CONTEXT_TOKENS;
@@ -368,7 +371,7 @@ function projectAgentsSection(s: Snapshot, list: ProjectAgent[]): Safe | null {
           ${a.adoptedBy ? null : html`<div class="btn-row project-adopt">
             <label class="visually-hidden" for="model-${a.name}">Modell für ${a.name}</label>
             <select id="model-${a.name}" class="model-select" data-project-model>
-              ${MODELS.map((m) => html`<option value="${m.id}" ${m.id === (a.modelId ?? 'claude-sonnet-5-5') ? 'selected' : ''}>${m.label}, ${(m.price.input * fx).toLocaleString('de-DE', { maximumFractionDigits: 2 })} / ${(m.price.output * fx).toLocaleString('de-DE', { maximumFractionDigits: 2 })} €</option>`)}
+              ${MODELS.map((m) => html`<option value="${m.id}" ${m.id === (a.modelId ?? 'claude-sonnet-5-5') ? 'selected' : ''}>${m.label}, ${(m.price.input * fx).toLocaleString(locale(), { maximumFractionDigits: 2 })} / ${(m.price.output * fx).toLocaleString(locale(), { maximumFractionDigits: 2 })} €</option>`)}
             </select>
             <button class="btn btn-small" data-action="adopt-agent" data-file="${a.file}" ${free > 0 && system.provider.available ? '' : 'disabled'}>Einstellen</button>
           </div>`}
@@ -765,7 +768,7 @@ function appIcon(app: { id: LaptopApp; glyph: string; badge: number }): Safe {
 export function laptopModal(s: Snapshot, draft: FilesDraft, projectAgents: ProjectAgent[], files: FileEntry[], folds: WorkspaceFolds, companyId: string, confirmFire: string | null = null): Safe {
   const apps = laptopApps(s, files);
   const open = apps.find((app) => app.id === draft.app) ?? null;
-  const time = new Date().toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' });
+  const time = new Date().toLocaleTimeString(locale(), { hour: '2-digit', minute: '2-digit' });
   const content = (id: LaptopApp) =>
     id === 'nachrichten' ? messagesApp(s, projectAgents, draft, companyId)
     : id === 'hilfe' ? shortcutsApp()
@@ -799,9 +802,10 @@ export function laptopModal(s: Snapshot, draft: FilesDraft, projectAgents: Proje
 const SHORTCUTS: { title: string; keys: [string, string][] }[] = [
   { title: 'Im Büro und in der Stadt', keys: [
     ['Pfeiltasten oder W A S D', 'laufen'],
-    ['+ und -', 'zoomen, auch mit dem Mausrad'],
+    ['+ und -', 'zoomen, auch mit dem Mausrad. Ganz herausgezoomt geht es in die Stadt und auf die Karte'],
     ['0', 'Ansicht zurücksetzen'],
     ['Ziehen mit der Maus', 'Ansicht verschieben'],
+    ['M', 'Karte öffnen und schliessen, in der Stadt'],
     ['Bild auf, Bild ab', 'Etage wechseln'],
     ['Enter', 'am Chefplatz sitzend den Laptop öffnen'],
   ] },
@@ -1026,12 +1030,23 @@ function settingsApp(s: Snapshot, draft: FilesDraft): Safe {
   const kind = connectionKind(draft.connectionKind) ?? CONNECTION_KINDS[0];
   const used = (id: string) => company.agents.filter((a) => a.hired && !a.firedAt && a.modelId === id).map((a) => a.name);
   return html`<div class="modal-body settings">
+    <details class="settings-group" data-key="sprache"><summary>Sprache</summary>
+      <section><h3>Sprache</h3>${languageSwitch()}</section>
+    </details>
+    <details class="settings-group" data-key="anbieter"><summary>KI-Anbieter (${1 + (system.subscriptions ?? []).length + connections.length} verbunden)</summary>
     <section data-key="connected"><h3>Verbunden</h3>
       <ul class="order-list">
         <li class="team-row" data-key="anthropic">
           <div class="team-head"><strong>Anthropic</strong><span class="chip">${system.provider.available ? 'Verbunden' : 'Nicht erreichbar'}</span></div>
           <small>${system.provider.available ? `${system.provider.account ?? ''}${system.provider.version ? `, CLI ${system.provider.version}` : ''}` : system.provider.error ?? ''}. Modelle: ${MODELS.filter((m) => m.providerId === 'anthropic').map((m) => m.label).join(', ')}.</small>
+          ${system.anthropicKeyEnd ? html`<div class="btn-row"><small>Abgerechnet über deinen API-Schlüssel, er endet auf ${system.anthropicKeyEnd}.</small><button class="btn btn-small" data-action="anthropic-key-remove">Wieder übers Abo</button></div>`
+          : html`<details class="activity" data-key="anthropic-key"><summary>Stattdessen über einen API-Schlüssel abrechnen</summary>
+            <form class="inline-form" data-form="anthropic-key"><input name="apiKey" type="password" required autocomplete="off" spellcheck="false" aria-label="Anthropic-API-Schlüssel" /><button class="btn btn-small">Speichern</button></form></details>`}
         </li>
+        ${(system.subscriptions ?? []).map((sub) => html`<li class="team-row" data-key="sub-${sub.label}">
+          <div class="team-head"><strong>${sub.label}</strong><span class="chip">Verbunden</span></div>
+          <small>${sub.account ?? ''}${sub.version ? `, CLI ${sub.version}` : ''}. Modelle: ${MODELS.filter((m) => m.providerId === 'abo').map((m) => m.label).join(', ')}. Mitarbeiter bekommen nur Dateiwerkzeuge, keine Shell.</small>
+        </li>`)}
         ${connections.map((c) => html`<li class="team-row" data-key="${c.id}">
           <div class="team-head"><strong>${c.label}</strong><button class="btn btn-small" data-action="connection-remove" data-id="${c.id}">Trennen</button></div>
           <small>${c.baseUrl}${c.keyEnd ? `, Schlüssel endet auf ${c.keyEnd}` : ''}, geprüft ${time(c.checkedAt)}. ${c.available.length} Modelle beim Anbieter.</small>
@@ -1081,6 +1096,7 @@ function settingsApp(s: Snapshot, draft: FilesDraft): Safe {
         <li>Lokale Modelle müssen Werkzeugaufrufe können, sonst entsteht keine Datei.</li>
       </ul>
     </section>
+    </details>
   </div>`;
 }
 
@@ -1345,7 +1361,7 @@ export function hireModal(s: Snapshot, draft: HireDraft): Safe {
               <span class="num">${pricePerMillion(m.id, fx)}<small class="model-step"> · ${eurFrom(estimateStepUsd(m.id, total, 0) * fx)}</small></span>
             </button>`)}
           </div>
-          <p class="hint">Anbieter: Anthropic. Listenpreise vom ${new Date(PRICES_AS_OF).toLocaleDateString('de-DE')}. ${fxNote(s.system.fx)}</p>
+          <p class="hint">Anbieter: Anthropic. Listenpreise vom ${new Date(PRICES_AS_OF).toLocaleDateString(locale())}. ${fxNote(s.system.fx)}</p>
         </fieldset>
       </div>
       <aside class="hire-side">
@@ -1648,7 +1664,7 @@ function mandatesSection(s: Snapshot, selectedId: string | null): Safe | null {
         return html`<li data-key="${m.id}">
           <button class="order-row ${m.id === selectedId ? 'selected' : ''}" data-action="select-mandate" data-id="${m.id}">
             <span class="order-row-text"><strong>${m.goal}</strong><small>${company.teams.find((t) => t.id === m.teamId) ? `Team ${company.teams.find((t) => t.id === m.teamId)!.name}, ` : ''}${manager?.name ?? '?'}${company.departments.length ? `, ${company.departments.find((d) => d.id === m.departmentId)?.name ?? 'Allgemein'}` : ''}</small></span>
-            <span class="agent-row-end"><span class="chip chip-mandate-${pending ? 'pending' : m.status}">${pending ? `${pending} Freigabe${pending > 1 ? 'n' : ''} offen` : MANDATE_STATUS[m.status]}</span><small class="num">${eur(mandateSpent(company, m))} von ${eur(m.budgetEur)}</small></span>
+            <span class="agent-row-end"><span class="chip chip-mandate-${pending ? 'pending' : m.status}">${pending ? (pending > 1 ? `${pending} Freigaben offen` : '1 Freigabe offen') : MANDATE_STATUS[m.status]}</span><small class="num">${eur(mandateSpent(company, m))} von ${eur(m.budgetEur)}</small></span>
           </button></li>`;
       })}
     </ul>` : null}
@@ -1817,7 +1833,7 @@ function folderView(node: FileFolder, folds: WorkspaceFolds, few: boolean, actio
         ${open ? html`<div class="file-nested">${folderView(folder, folds, few, action, selected)}</div>` : null}
       </li>`;
     })}
-    ${node.files.map((f) => html`<li data-key="${f.path}"><button class="file-row ${f.path === selected ? 'selected' : ''}" data-action="${action}" data-path="${f.path}" title="${f.path}"><span>${f.path.split('/').pop()}</span><small class="num">${(f.size / 1024).toLocaleString('de-DE', { maximumFractionDigits: 1 })} KB</small></button></li>`)}
+    ${node.files.map((f) => html`<li data-key="${f.path}"><button class="file-row ${f.path === selected ? 'selected' : ''}" data-action="${action}" data-path="${f.path}" title="${f.path}"><span>${f.path.split('/').pop()}</span><small class="num">${(f.size / 1024).toLocaleString(locale(), { maximumFractionDigits: 1 })} KB</small></button></li>`)}
   </ul>`;
 }
 
@@ -2093,7 +2109,7 @@ function ledgerRow(companyId: string, run: Run): Safe {
   const matches = computed !== null && Math.abs(computed - run.costUsd) < Math.max(1e-6, run.costUsd * 0.01);
   const price = model?.price;
   const row = (label: string, tokens: number, rate?: number) =>
-    tokens ? html`<tr><th scope="row">${label}</th><td class="num">${count(tokens)}</td><td class="num">${rate?.toLocaleString('de-DE')} $</td><td class="num">${usd((tokens * (rate ?? 0)) / 1e6)}</td></tr>` : null;
+    tokens ? html`<tr><th scope="row">${label}</th><td class="num">${count(tokens)}</td><td class="num">${rate?.toLocaleString(locale())} $</td><td class="num">${usd((tokens * (rate ?? 0)) / 1e6)}</td></tr>` : null;
   return html`<li data-key="${run.id}">
     <details class="ledger-row">
       <summary>
@@ -2288,7 +2304,8 @@ export function roomChips(s: Snapshot, viewFloor = 0, ceoSeated = false): Safe {
   const base = siteBase(viewFloor);
   const pending = s.company.mandates.reduce((sum, m) => sum + m.proposals.filter((p) => p.status === 'pending').length + m.contracts.filter((c) => c.status === 'pending').length, 0);
   const commands = s.company.commands.filter((c) => c.status === 'pending').length;
-  return html`<div class="chip-room">${loc.title} · ${loc.w} × ${loc.d} Felder${s.company.departments.length ? ` · ${s.company.departments.length === 1 ? '1 Abteilung' : `${s.company.departments.length} Abteilungen`}` : ''}</div>
+  const closed = s.system.provider.billing === 'api' ? null : quotaClosedUntil(s.system.plan, Date.now());
+  return html`${closed ? html`<div class="chip-room chip-pending" data-key="feierabend">Kontingent leer: Feierabend bis ${time(closed)}</div>` : null}<div class="chip-room">${loc.title} · ${loc.w} × ${loc.d} Felder${s.company.departments.length ? ` · ${s.company.departments.length === 1 ? '1 Abteilung' : `${s.company.departments.length} Abteilungen`}` : ''}</div>
     ${pending ? html`<div class="chip-room chip-pending">${pending === 1 ? 'Ein Vorschlag wartet' : `${pending} Vorschläge warten`} auf deine Freigabe</div>` : null}
     ${commands ? html`<button class="btn btn-door btn-attention" data-action="tab-team">${commands === 1 ? 'Ein Befehl wartet' : `${commands} Befehle warten`} auf deine Freigabe</button>` : null}
     ${building.floors > 1 ? html`<div class="floor-switch" role="group" aria-label="Etage">
@@ -2303,8 +2320,10 @@ export function roomChips(s: Snapshot, viewFloor = 0, ceoSeated = false): Safe {
 
 /* ---------- Stadt ---------- */
 
-export function townChips(): Safe {
-  return html`<div class="chip-seats">Klicke auf die Stadt oder laufe mit den Pfeiltasten. Die Tür deines Hauses führt hinein.</div>`;
+export function townChips(city: City | null): Safe {
+  return html`<div class="chip-room" data-key="stadt"><strong>${city?.name ?? TOWN_NAME}</strong></div>
+    <div class="floor-switch" data-key="karte"><button class="btn btn-door" data-action="town-map">Karte</button></div>
+    <div class="chip-seats" data-key="hinweis">Klicke oder laufe mit den Pfeiltasten. M öffnet die Karte. Die Tür deines Hauses führt hinein.</div>`;
 }
 
 /** Was man hier tun kann, erscheint erst, wenn die Figur davor steht. */

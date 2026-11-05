@@ -195,6 +195,20 @@ Wer einen Auftrag bekommt, prüft ihn zuerst. Passt er offensichtlich nicht und 
 
 Neue Mitarbeiter gehen nach dem Vorstellungsgespräch zu jedem Kollegen und erfahren, was er kann, und umgekehrt. Das kommt aus Stelle und Fähigkeiten und kostet keinen Lauf. Danach steht es in ihren Anweisungen, und nur wen jemand kennt, kann er fragen oder ihm etwas weitergeben. Kommt vorher Arbeit, endet die Runde, das Wissen bleibt.
 
+## Silicon Valley
+
+Das Spiel liegt auf einer grossen Karte mit sechs Städten in ihrer echten Lage zueinander: Menlo Park, Palo Alto und Mountain View an der Bay, darunter Cupertino, Sunnyvale und San José. Highway 101 und El Camino Real verbinden sie, oben im Bild die Bay, unten die Hügel. Mit der Bahn springt man zwischen den Städten. Ein Feld der Stadt ist so gross wie ein Feld im Büro. Der Boden entsteht stückweise, wo man hinschaut (`client/world/town.ts`).
+
+Um das Tal herum liegt eine Welt von rund 109.000 mal 109.000 Feldern mit Küsten, Flüssen, Gebirgen, Wäldern, Wüsten, Feldern und rund 129.000 Orten. Sie entsteht beim Hinsehen aus der Lage auf der Karte (`shared/town.ts`): Dieselbe Stelle sieht auf jedem Rechner gleich aus, und ein Grundstück ist schon durch seine Kennung bestimmt. Gespeichert wird nur, was die Firma besitzt und baut. `M` öffnet die Übersichtskarte, ebenso weiteres Herauszoomen: Vom Büro geht es in die Stadt und von dort auf die Karte. Ein Klick auf einen Ort reist dorthin, ganz hineinzoomen führt zurück in die Stadt.
+
+## Sprachen
+
+Standard ist Englisch, in den Einstellungen und auf der Startseite lässt sich Deutsch wählen. Die Wahl liegt in `data/sprache.json`. Die Texte stehen auf Deutsch im Code, `client/i18n/en.ts` ist das Wörterbuch, `{}` steht darin für einen eingesetzten Wert. `node scripts/i18n-keys.ts` listet alle Texte, ein Test meldet, wenn einer im Wörterbuch fehlt. Agenten bekommen die Sprache als Regel mitgeteilt und schreiben Ergebnisse darin, ihre Arbeitsanweisungen selbst bleiben Deutsch.
+
+## Kontingent und Abos
+
+Wer lokal angemeldet ist, arbeitet mit dem eigenen Abo: Anthropic über die Claude-CLI, OpenAI über die Codex-CLI. API-Schlüssel sind die Option, in den Einstellungen auf dem Laptop. Bei der Codex-CLI sind Shell und Zusatzfunktionen abgeschaltet, Dateien gehen nur über `server/providers/files-mcp.ts`. Meldet ein Anthropic-Abo sein Kontingent als leer, gehen seine Mitarbeiter heim und kommen zur Rücksetzzeit wieder; wartende Arbeit läuft dann von selbst weiter.
+
 ## Das Büro in der Stadt
 
 Die Haustür liegt in der Wand zur Strasse, ein Weg führt zum Gehweg. Ein Klick auf die Tür lässt die Figur hinlaufen, dann steht sie in der Stadt. Zurück führt ein Klick auf die Tür des eigenen Hauses. Rund ums Büro liegt die echte Stadt, ausgerichtet auf das Grundstück der Firma. Das eigene Grundstück ist so scharf wie das Büro; Nachbarhäuser davor werden nach dem Büro gezeichnet und verdecken es, wo sie wirklich davor stehen.
@@ -212,6 +226,7 @@ Dieselbe Liste steht im Spiel auf dem Laptop unter **Tastenkürzel**.
 | Büro, Stadt | Pfeiltasten, `W A S D` | laufen |
 | Büro, Stadt | `+`, `-`, Mausrad | zoomen |
 | Büro, Stadt | `0` | Ansicht zurücksetzen |
+| Stadt | `M` | Karte öffnen und schliessen |
 | Büro | `Bild auf`, `Bild ab` | Etage wechseln |
 | Büro | `Enter` | am Chefplatz sitzend den Laptop öffnen |
 | Bau-Modus | Klick, `Enter` | abstellen |

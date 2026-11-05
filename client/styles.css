@@ -658,3 +658,27 @@ kbd { font: inherit; padding: 0 5px; background: var(--raised); border: 1px soli
 @media (prefers-reduced-motion: reduce) {
   * { scroll-behavior: auto !important; }
 }
+
+/* Die Übersichtskarte der Welt */
+.world-map { position: absolute; inset: 0; z-index: 30; background: #17324a; overflow: hidden; touch-action: none; cursor: grab; }
+.world-map.dragging { cursor: grabbing; }
+.world-map canvas { position: absolute; inset: 0; width: 100%; height: 100%; image-rendering: pixelated; }
+.world-map-labels { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+.world-map-place { position: absolute; left: 0; top: 0; pointer-events: auto; cursor: pointer; white-space: nowrap; background: rgba(14, 27, 44, .78); color: #eef2f5; border: 1px solid rgba(255, 255, 255, .25); padding: 0 5px; font: inherit; font-size: 15px; line-height: 18px; }
+.world-map-place:hover, .world-map-place:focus-visible { background: var(--amber); color: var(--amber-ink); outline: none; }
+.world-map-place-city { font-size: 18px; font-weight: 700; }
+.world-map-marker { position: absolute; left: 0; top: 0; pointer-events: none; white-space: nowrap; background: var(--amber); color: var(--amber-ink); padding: 0 5px; font-size: 15px; line-height: 18px; }
+.world-map-marker-home { background: var(--mint); }
+.world-map-bar { position: absolute; right: 12px; top: 12px; display: flex; gap: 8px; align-items: center; }
+.world-map-hint { position: absolute; left: 12px; bottom: 12px; background: rgba(14, 27, 44, .78); color: #d7dde4; padding: 2px 8px; font-size: 16px; pointer-events: none; }
+
+.language-switch { display: flex; gap: 8px; }
+.language-switch .btn[aria-pressed="true"] { background: var(--amber); color: var(--amber-ink); }
+
+/* Einklappbare Gruppen in den Einstellungen */
+.settings-group { border-top: 1px solid var(--line); padding: 10px 0; }
+.settings-group > summary { cursor: pointer; font-size: 20px; color: var(--mint); list-style: none; }
+.settings-group > summary::-webkit-details-marker { display: none; }
+.settings-group > summary::before { content: '▸ '; }
+.settings-group[open] > summary::before { content: '▾ '; }
+.world-map-scale { position: absolute; left: 12px; bottom: 44px; height: 8px; border: 2px solid #eef2f5; border-top: none; color: #eef2f5; font-size: 16px; line-height: 16px; background: rgba(14, 27, 44, .78); padding: 0 4px; pointer-events: none; white-space: nowrap; }

@@ -233,6 +233,33 @@ export function furnitureSprite(kind: 'shelf' | 'coffee' | 'plant', variant = 0,
   );
 }
 
+export type StairMode = 'up' | 'down' | 'both';
+
+/** Eine Treppe nach Etage: unten nur hinauf, oben nur hinunter, dazwischen ein Treppenhaus mit beiden Läufen. */
+export function stairSprite(mode: StairMode): Sprite {
+  return cached(`stairs-${mode}`, () =>
+    sprite((pen) => {
+      const steps = 8;
+      const depth = 1.84 / steps;
+      const y = (k: number) => 1.92 - (k + 1) * depth;
+      // Ein Lauf: hinauf steigt er nach hinten, hinunter nach vorn. Die Stufen liegen je Lauf in ihrer Breite.
+      const flight = (x0: number, width: number, down: boolean) => {
+        const top = (k: number) => (down ? (steps - k) : k + 1) * 6;
+        for (let k = steps - 1; k >= 0; k--) {
+          pen.box(x0, y(k), 0, width, depth, top(k), tri(k % 2 ? '#9aa4ae' : '#b4bcc4', 0.16));
+          pen.faceJ(x0, y(k) + depth, top(k) - 1, 0, 0, width * 16, 1, '#dfe4e8');
+        }
+      };
+      if (mode === 'both') {
+        flight(0.02, 0.46, false);
+        flight(0.52, 0.46, true);
+      } else {
+        flight(0.02, 0.96, mode === 'down');
+      }
+    }),
+  );
+}
+
 export function propSprite(prop: Pick<FixedProp, 'kind'>): Sprite {
   return cached(`prop${prop.kind}`, () =>
     sprite((pen) => {

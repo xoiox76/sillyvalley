@@ -153,6 +153,17 @@ async function route(engine: Engine, req: IncomingMessage, res: ServerResponse, 
   if (parts[0] === 'system') {
     return sendJson(res, 200, method === 'POST' ? await engine.refreshSystem() : engine.system());
   }
+  if (parts[0] === 'language' && engine.settings) {
+    if (method === 'POST') engine.settings.setLanguage(((await readJson(req)) as { language?: unknown }).language);
+    return sendJson(res, 200, { language: engine.settings.language });
+  }
+  if (parts[0] === 'settings' && parts[1] === 'anthropic' && engine.settings && method === 'POST') {
+    const body = (await readJson(req)) as { apiKey?: string | null };
+    engine.settings.setAnthropicKey(body.apiKey ?? null);
+    await engine.refreshSystem();
+    engine.settingsChanged();
+    return sendJson(res, 200, {});
+  }
   if (parts[0] === 'settings' && parts[1] === 'connections' && engine.settings) {
     const settings = engine.settings;
     try {
@@ -357,6 +368,11 @@ async function route(engine: Engine, req: IncomingMessage, res: ServerResponse, 
   }
   if (section === 'building' && parts.length === 3 && method === 'POST') {
     engine.expandBuilding(id, await readJson(req));
+    return sendJson(res, 200, {});
+  }
+
+  if (section === 'town' && parts.length === 4 && parts[3] === 'visit' && method === 'POST') {
+    engine.visitCity(id, ((await readJson(req)) as { cityId: string }).cityId);
     return sendJson(res, 200, {});
   }
 

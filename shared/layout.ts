@@ -187,8 +187,9 @@ export function findPath(loc: Pick<LocationInfo, 'w' | 'd'>, blocked: Set<string
   if (from.i === to.i && from.j === to.j) return [];
   const prev = new Map<string, Tile | null>([[key(from), null]]);
   const queue = [from];
-  while (queue.length) {
-    const t = queue.shift()!;
+  // Ein Zeiger statt shift(): Auf der grossen Karte wäre das Herausnehmen sonst das Teuerste an der Suche.
+  for (let head = 0; head < queue.length; head++) {
+    const t = queue[head];
     if (t.i === to.i && t.j === to.j) {
       const path: Tile[] = [];
       let at: Tile | null = t;

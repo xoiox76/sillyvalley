@@ -627,6 +627,8 @@ export interface TownState {
   built: string[];
   /** Standorte, deren Einrichtung schon ausgepackt wurde. Sie kommt nur beim ersten Einzug in den Raum. */
   furnished: string[];
+  /** Besuchte Städte und ihre Zufallszahl. Sie wird beim ersten Besuch gezogen und danach nicht mehr geändert. */
+  citySalts?: Record<string, number>;
 }
 
 export interface Company {
@@ -699,6 +701,10 @@ export interface ConnectionView {
 }
 
 export interface SystemInfo {
+  /** Weitere Abos, mit denen dieser Rechner angemeldet ist. */
+  subscriptions?: { label: string; account: string | null; version: string | null }[];
+  /** Die letzten vier Zeichen eines hinterlegten Anthropic-Schlüssels. Null: Es zählt das Abo. */
+  anthropicKeyEnd?: string | null;
   connections?: ConnectionView[];
   /** Die Modelle der Verbindungen, im Format des Katalogs. */
   extraModels?: ModelInfo[];

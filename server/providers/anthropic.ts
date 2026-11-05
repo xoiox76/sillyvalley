@@ -24,9 +24,11 @@ const ENV_WHITELIST = [
   'HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'NODE_EXTRA_CA_CERTS',
 ];
 
-function agentEnv(): NodeJS.ProcessEnv {
+/** Ein hinterlegter Schlüssel geht vor. Ohne ihn arbeitet die CLI mit dem Abo, mit dem sie angemeldet ist. */
+export function agentEnv(apiKey: string | null = null): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
   for (const name of ENV_WHITELIST) if (process.env[name]) env[name] = process.env[name];
+  if (apiKey) env.ANTHROPIC_API_KEY = apiKey;
   env.CLAUDE_CODE_DISABLE_CLAUDE_MDS = '1';
   env.CLAUDE_CODE_DISABLE_AUTO_MEMORY = '1';
   return env;
@@ -346,13 +348,13 @@ function findBinary(): string | null {
   return null;
 }
 
-function run(bin: string, args: string[]): Promise<string> {
+function run(bin: string, args: string[], apiKey: string | null = null): Promise<string> {
   return new Promise((resolve, reject) => {
-    execFile(bin, args, { env: agentEnv(), timeout: 15000 }, (err, stdout) => (err ? reject(err) : resolve(stdout)));
+    execFile(bin, args, { env: agentEnv(apiKey), timeout: 15000 }, (err, stdout) => (err ? reject(err) : resolve(stdout)));
   });
 }
 
-export function createAnthropicProvider(overrideBin?: string): Provider {
+export function createAnthropicProvider(overrideBin?: string, keyOf: () => string | null = () => null): Provider {
   const testDouble = Boolean(overrideBin);
   const bin = overrideBin ?? findBinary();
 
@@ -370,7 +372,7 @@ export function createAnthropicProvider(overrideBin?: string): Provider {
       if (testDouble) return { ...base, available: true, billing: 'test', version: 'Test-Attrappe', account: 'Test-Attrappe' };
       try {
         const version = (await run(bin, ['--version'])).trim().split(' ')[0];
-        if (process.env.ANTHROPIC_API_KEY) {
+        if (keyOf() || process.env.ANTHROPIC_API_KEY) {
           return { ...base, available: true, version, billing: 'api', account: 'API-Schlüssel' };
         }
         const auth = JSON.parse(await run(bin, ['auth', 'status']));
@@ -393,7 +395,7 @@ export function createAnthropicProvider(overrideBin?: string): Provider {
       let buffer = '';
       let stderr = '';
 
-      const proc = spawn(bin, buildArgs(spec), { cwd: spec.cwd, env: agentEnv(), stdio: ['ignore', 'pipe', 'pipe'] });
+      const proc = spawn(bin, buildArgs(spec), { cwd: spec.cwd, env: agentEnv(keyOf()), stdio: ['ignore', 'pipe', 'pipe'] });
 
       const stop = (reason: StopReason) => {
         if (ended) return;

@@ -25,6 +25,11 @@ const USAGE = { input_tokens: 10, output_tokens: 100, cache_read_input_tokens: 2
 
 emit({ type: 'system', subtype: 'init', session_id: sessionId, model, tools: ['Read', 'Write'], mcp_servers: [], apiKeySource: 'none' });
 emit({ type: 'stream_event', event: { type: 'message_start', message: { id: 'msg_1', usage: USAGE } }, api_message_id: 'msg_1' });
+// "kontingent" meldet ein leeres Abo mit Rücksetzzeit in [bis:Sekunden].
+if (scenario === 'kontingent') {
+  const seconds = Number(prompt.match(/\[bis:(\d+)\]/)?.[1] ?? 1);
+  emit({ type: 'rate_limit_event', rate_limit_info: { status: 'rejected', unifiedWindows: { five_hour: { utilization: 1, resetsAt: Date.now() / 1000 + seconds } } } });
+}
 
 if (scenario === 'stoppzuspaet') {
   // Stellt das Rennen nach: Das Stopp-Signal kommt, aber der Lauf wird trotzdem noch regulär fertig.

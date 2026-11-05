@@ -56,7 +56,7 @@ before(async () => {
   const view = await settings.addConnection({ kind: 'custom', baseUrl: `http://127.0.0.1:${(server.address() as { port: number }).port}/v1`, label: 'API' });
   settings.addModel(view.id, { remote: 'gpt-test', input: 1, cached: 1, output: 2 });
   modelId = `${view.id}:gpt-test`;
-  engine = new Engine(data, createRouter(createAnthropicProvider(FAKE), createCompatibleProvider((id) => settings.resolve(id)), (id) => id.includes(':')), new FxSource(data, async () => ECB));
+  engine = new Engine(data, createRouter(createAnthropicProvider(FAKE), [{ handles: (id) => id.includes(':'), provider: createCompatibleProvider((id) => settings.resolve(id)) }]), new FxSource(data, async () => ECB));
   engine.tourStepMs = 0;
   engine.settings = settings;
   await engine.init();
