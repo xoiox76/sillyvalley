@@ -1,11 +1,11 @@
-// Der Stadtplan von Silly Vailley. Server und Client nutzen dieselben Grundstücke und Wege,
+// Der Stadtplan von Silly Valley. Server und Client nutzen dieselben Grundstücke und Wege,
 // damit das, was die Karte anbietet, auch dem entspricht, was das Spiel zulässt.
 
 import type { LocationId, TownState } from './types.ts';
 
 export const TOWN_W = 40;
 export const TOWN_D = 36;
-export const TOWN_NAME = 'Silly Vailley';
+export const TOWN_NAME = 'Silly Valley';
 
 export interface TownTile {
   i: number;

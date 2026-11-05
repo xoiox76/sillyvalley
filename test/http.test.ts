@@ -24,7 +24,7 @@ let companyId: string;
 const portOf = (s: Server) => (s.address() as AddressInfo).port;
 
 before(async () => {
-  dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sillyvailley-http-'));
+  dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sillyvalley-http-'));
   engine = new Engine(dir, createAnthropicProvider(FAKE), new FxSource(dir, async () => "<Cube time='2026-10-30'><Cube currency='USD' rate='1.25'/></Cube>"));
   engine.tourStepMs = 0;
   await engine.init();

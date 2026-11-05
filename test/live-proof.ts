@@ -2,7 +2,7 @@
 // Start: npm run test:live
 //
 // Das Verbrauchsbuch wird gegen eine unabhängige Quelle geprüft: die Transkripte,
-// die die CLI selbst unter ~/.claude/projects führt und die sillyvailley nie schreibt.
+// die die CLI selbst unter ~/.claude/projects führt und die sillyvalley nie schreibt.
 
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
@@ -63,7 +63,7 @@ function transcriptTokens(sessionId: string) {
   throw new Error(`Kein Transkript für Session ${sessionId} gefunden.`);
 }
 
-const data = fs.mkdtempSync(path.join(os.tmpdir(), 'sillyvailley-echtbeweis-'));
+const data = fs.mkdtempSync(path.join(os.tmpdir(), 'sillyvalley-echtbeweis-'));
 const engine = new Engine(data, createAnthropicProvider(), new FxSource(data));
 engine.tourStepMs = 0;
 await engine.init();
@@ -472,7 +472,7 @@ assert.ok(fs.readFileSync(path.join(workspace, gated.file), 'utf8').includes(ope
 ok(`${open.length} Vorschlag/Vorschläge warteten auf dich; einer freigegeben und fertig ("${approvedOrder.title.slice(0, 50)}"), ${open.length - 1} abgelehnt, Projekt abgeschlossen`);
 
 say('\n20. Ein bestehendes Projekt: Agenten ändern dort, und sonst nirgends außerhalb');
-const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'sillyvailley-projekt-'));
+const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'sillyvalley-projekt-'));
 const project = path.join(projectRoot, 'meine-app');
 fs.mkdirSync(project);
 fs.writeFileSync(path.join(project, 'README.md'), '# Meine App\n\nEine App für Vereine.\n');
@@ -483,13 +483,13 @@ assert.ok(dev.hired, projectCompany.notices.at(-1)?.text ?? 'Einstellung fehlges
 const outsideProject = path.join(projectRoot, 'raus.txt');
 const projectOrder = await engine.startOrder(projectCompany.id, {
   team: { work: dev.id }, title: 'README des Projekts ergänzen',
-  notes: 'Hänge an die README.md des Projekts genau eine Zeile an: "Stand: von Silly Vailley ergänzt." Lege danach, wie verlangt, eine kurze Notiz unter ergebnisse/ ab.',
+  notes: 'Hänge an die README.md des Projekts genau eine Zeile an: "Stand: von Silly Valley ergänzt." Lege danach, wie verlangt, eine kurze Notiz unter ergebnisse/ ab.',
   criteria: ['README.md des Projekts enthält die neue Zeile', 'Notiz unter ergebnisse/ liegt vor'], limitEur: 0.1, maxRevisions: 0,
 });
 await until(() => projectOrder.status !== 'running', 'Projektauftrag', 180000);
 const projectRun = projectCompany.runs.at(-1)!;
 assert.equal(projectOrder.status, 'review', `Status ${projectOrder.status}: ${projectRun.error}`);
-assert.match(fs.readFileSync(path.join(project, 'README.md'), 'utf8'), /von Silly Vailley ergänzt/, 'Die Änderung muss im echten Projektordner ankommen');
+assert.match(fs.readFileSync(path.join(project, 'README.md'), 'utf8'), /von Silly Valley ergänzt/, 'Die Änderung muss im echten Projektordner ankommen');
 assert.ok(projectRun.files.includes('projekt/README.md'), `Geänderte Dateien: ${projectRun.files.join(', ')}`);
 assert.ok(projectOrder.files.length > 0, 'Die Notiz unter ergebnisse/ fehlt');
 assert.ok(engine.files(projectCompany.id).some((f) => f.path === 'projekt/README.md'), 'Das Projekt erscheint im Arbeitsbereich als projekt/');
@@ -553,7 +553,7 @@ assert.equal(hireling.context?.tokens, contextNow, 'Die Anzeige entspricht der l
 ok(`${hireling.name}: ${hireling.context!.tokens} von ${usageOf.contextWindow} Tokens, Ausgabe bis ${usageOf.maxOutputTokens}, laut Rohprotokoll`);
 
 say('\n23. Ein Subagent aus dem Projekt wird echter Mitarbeiter und behält seine Grenzen');
-const subRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'sillyvailley-subagents-'));
+const subRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'sillyvalley-subagents-'));
 fs.mkdirSync(path.join(subRoot, '.claude', 'agents'), { recursive: true });
 fs.writeFileSync(path.join(subRoot, 'CLAUDE.md'), '# Projektregeln\n\nDas Projektwort lautet SEEADLER.\n');
 fs.writeFileSync(path.join(subRoot, '.claude', 'agents', 'pruefer.md'), '---\nname: pruefer\ndescription: Prüft Dinge und ändert nichts.\ntools: Read, Grep, Glob, Bash\nmodel: haiku\n---\n\nWenn jemand nach dem Prüfwort fragt, lautet die Antwort FALKE.\n');

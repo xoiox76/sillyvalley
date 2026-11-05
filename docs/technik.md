@@ -1,4 +1,4 @@
-# Silly Vailley
+# Silly Valley
 
 Ein isometrisches Aufbauspiel, dessen Mitarbeiter echte KI-Agenten sind. Du gründest eine Firma für deine
 Idee, stellst Agenten nach Rolle, Fähigkeiten, Modell und Kosten ein und führst sie durch das Büro. Was im
@@ -12,7 +12,7 @@ Eine Firma lässt sich unter Laptop › Einstellungen mit einem Repo verbinden, 
 
 ## Als Mac-App starten
 
-`desktop/build.sh` baut `Silly Vailley.app` auf den Schreibtisch: ein eigenes Fenster, das den lokalen Server startet und beim Beenden wieder stoppt. Läuft schon ein Server, etwa aus dem Terminal, nutzt die App ihn und lässt ihn laufen. Die App merkt sich Projektordner und die Pfade zu `node` und `claude`. Ändern sie sich, baue sie neu. Das Protokoll steht in `~/Library/Logs/Silly Vailley.log`.
+`desktop/build.sh` baut `Silly Valley.app` auf den Schreibtisch: ein eigenes Fenster, das den lokalen Server startet und beim Beenden wieder stoppt. Läuft schon ein Server, etwa aus dem Terminal, nutzt die App ihn und lässt ihn laufen. Die App merkt sich Projektordner und die Pfade zu `node` und `claude`. Ändern sie sich, baue sie neu. Das Protokoll steht in `~/Library/Logs/Silly Valley.log`.
 
 ## Starten
 
@@ -261,7 +261,7 @@ Für das erste Stockwerk wählst du den Platz für Treppe oder Fahrstuhl selbst.
 Am Haus jeder Firma steht ein Schild mit ihrem Namen und dem Zusatz Corp., sofern der Name keine Rechtsform trägt. So sieht man auch
 die anderen Firmen des Spielstands. Teilen sich mehrere ein Haus, stehen alle auf dem Schild.
 
-Silly Vailley ist eine amerikanische Kleinstadt mit fünf Straßen, Wohnhäusern, kleinen Geschäften, leerstehenden Läden und
+Silly Valley ist eine amerikanische Kleinstadt mit fünf Straßen, Wohnhäusern, kleinen Geschäften, leerstehenden Läden und
 freien Grundstücken. Die Firma beginnt im Elternhaus, im Kinderzimmer oder in der Garage. Mit „Nach draußen" verlässt
 der Spieler das Büro und läuft als eigene Figur per Klick oder Pfeiltasten durch die Stadt.
 
@@ -282,13 +282,13 @@ Bei der Gründung kann eine Firma einen vorhandenen Ordner bekommen (Code, Dokum
 ändern; für Agenten und Oberfläche erscheint er als `projekt/`. Technisch ist er ein zweiter erlaubter Ordner
 (`--add-dir`) neben dem Arbeitsbereich, `--restricted` gilt weiter: Alles außerhalb beider Orte wird abgewiesen,
 der Echtbeweis belegt das. Spielstand, Verbrauchsbuch und Ergebnisse bleiben außerhalb des Projekts. Das ganze
-Zuhause, die ganze Platte und der Datenordner von Silly Vailley sind als Projekt ausgeschlossen. Agenten führen keine
+Zuhause, die ganze Platte und der Datenordner von Silly Valley sind als Projekt ausgeschlossen. Agenten führen keine
 Befehle aus, also auch kein Git; ob eine Änderung ins Repository kommt, entscheidet der Mensch wie bisher.
 
 ## Zum Ausprobieren
 
 ```bash
-SILLYVAILLEY_BAUPUNKTE=unendlich npm run dev
+SILLYVALLEY_BAUPUNKTE=unendlich npm run dev
 ```
 
 Mit diesem Schalter kostet Bauen nichts: Möbel, Abteilungen und Umzug sind frei, die Anzeige zeigt ∞. Die
@@ -312,7 +312,7 @@ npm run test:live
 ```
 
 Der Echtbeweis läuft mit echten Agenten, kostet rund 8 Cent API-Gegenwert und gleicht das Verbrauchsbuch
-gegen die Transkripte ab, die die CLI selbst führt und die Silly Vailley nie schreibt. Er beweist auch, dass Agenten
+gegen die Transkripte ab, die die CLI selbst führt und die Silly Valley nie schreibt. Er beweist auch, dass Agenten
 einander in Besprechungen wirklich hören, dass ein Beschluss spätere Arbeit erreicht, und dass ein Manager nur
 im Team und im Budget plant und ohne Freigabe-Stufe nichts startet.
 

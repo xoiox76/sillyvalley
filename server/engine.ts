@@ -154,7 +154,7 @@ export class Engine {
       if (sprint.status !== 'planning') continue;
       touched = true;
       sprint.status = 'proposed';
-      sprint.error = 'Das Planning wurde unterbrochen, weil Silly Vailley beendet wurde.';
+      sprint.error = 'Das Planning wurde unterbrochen, weil Silly Valley beendet wurde.';
     }
     // Eine Anfrage läuft nicht über einen Neustart hinweg. Wer gewartet hat, macht ohne Antwort weiter.
     for (const help of company.helps) {
@@ -194,7 +194,7 @@ export class Engine {
       if (mandate.status !== 'planning') continue;
       touched = true;
       mandate.status = 'active';
-      mandate.lastError = 'Die Planung wurde unterbrochen, weil Silly Vailley beendet wurde.';
+      mandate.lastError = 'Die Planung wurde unterbrochen, weil Silly Valley beendet wurde.';
       this.notify(company, 'info', `Projekt "${mandate.goal}": Die Planung wurde beim Neustart unterbrochen. Du kannst sie erneut anstoßen.`);
     }
     for (const meeting of company.meetings) {
@@ -214,7 +214,7 @@ export class Engine {
       run.status = 'interrupted';
       run.endedAt = Date.now();
       run.costSource = 'berechnet';
-      run.error = 'Der Lauf wurde unterbrochen, weil Silly Vailley beendet wurde. Der Verbrauch ist aus den bis dahin gezählten Tokens berechnet.';
+      run.error = 'Der Lauf wurde unterbrochen, weil Silly Valley beendet wurde. Der Verbrauch ist aus den bis dahin gezählten Tokens berechnet.';
       this.killOrphan((run as Run & { pid?: number }).pid);
       this.appendLedger(company, run);
       const agent = company.agents.find((a) => a.id === run.agentId);
@@ -452,7 +452,7 @@ export class Engine {
 
   /* ---------- Firma ---------- */
 
-  /** Ein Projektordner muss ein echter, bestehender Ordner sein, der weder Silly Vailley selbst noch das ganze Zuhause ist. */
+  /** Ein Projektordner muss ein echter, bestehender Ordner sein, der weder Silly Valley selbst noch das ganze Zuhause ist. */
   private checkProjectDir(input: string | null | undefined): string | null {
     const given = input?.trim();
     if (!given) return null;
@@ -468,7 +468,7 @@ export class Engine {
     const home = fs.realpathSync(os.homedir());
     const within = (a: string, b: string) => a === b || a.startsWith(`${b}${path.sep}`);
     if (real === path.parse(real).root || real === home) throw new GameError('Das ganze Zuhause oder die ganze Platte kann kein Projekt sein. Wähle einen Projektordner.');
-    if (within(real, data) || within(data, real)) throw new GameError('Der Projektordner darf nicht die Daten von Silly Vailley enthalten oder darin liegen.');
+    if (within(real, data) || within(data, real)) throw new GameError('Der Projektordner darf nicht die Daten von Silly Valley enthalten oder darin liegen.');
     return real;
   }
 

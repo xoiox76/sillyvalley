@@ -24,7 +24,7 @@ export function renderStart(root: HTMLElement, onOpen: (id: string) => void): vo
     const provider = system?.provider;
     morph(inner, html`
       <header class="start-head">
-        <h1 class="logo logo-big">Silly Vailley</h1>
+        <h1 class="logo logo-big">Silly Valley</h1>
         <p class="start-claim">Firma gründen, KI-Agenten einstellen, Ergebnisse abnehmen.</p>
       </header>
       ${companies.length

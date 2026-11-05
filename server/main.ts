@@ -10,15 +10,15 @@ import { createCompatibleProvider, createRouter } from './providers/compatible.t
 import { Settings } from './settings.ts';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const DATA = process.env.SILLYVAILLEY_DATA ?? path.join(ROOT, 'data');
+const DATA = process.env.SILLYVALLEY_DATA ?? path.join(ROOT, 'data');
 const PORT = Number(process.env.PORT ?? 4600);
 const ARTIFACT_PORT = PORT + 1;
-/** Zum Ausprobieren des Büros: SILLYVAILLEY_BAUPUNKTE=unendlich. Die Oberfläche zeigt den Schalter. */
-const UNLIMITED_BUILD = process.env.SILLYVAILLEY_BAUPUNKTE === 'unendlich';
+/** Zum Ausprobieren des Büros: SILLYVALLEY_BAUPUNKTE=unendlich. Die Oberfläche zeigt den Schalter. */
+const UNLIMITED_BUILD = process.env.SILLYVALLEY_BAUPUNKTE === 'unendlich';
 const PRODUCTION = process.env.NODE_ENV === 'production';
 
 const settings = new Settings(DATA);
-const provider = createRouter(createAnthropicProvider(process.env.SILLYVAILLEY_AGENT_BIN), createCompatibleProvider((id) => settings.resolve(id)), (id) => id.includes(':'));
+const provider = createRouter(createAnthropicProvider(process.env.SILLYVALLEY_AGENT_BIN), createCompatibleProvider((id) => settings.resolve(id)), (id) => id.includes(':'));
 const engine = new Engine(DATA, provider, new FxSource(DATA), ARTIFACT_PORT, UNLIMITED_BUILD);
 engine.settings = settings;
 await engine.init();
@@ -57,10 +57,10 @@ createServer(createArtifactHandler(engine, PORT)).listen(ARTIFACT_PORT, '127.0.0
 
 server.listen(PORT, '127.0.0.1', () => {
   const info = engine.system().provider;
-  console.log(`Silly Vailley läuft auf http://localhost:${PORT}`);
+  console.log(`Silly Valley läuft auf http://localhost:${PORT}`);
   console.log(info.available ? `Agenten: ${info.label} (${info.account}, CLI ${info.version})` : `Agenten nicht verfügbar: ${info.error}`);
   if (info.testDouble) console.log('ACHTUNG: Test-Attrappe aktiv. Es laufen keine echten Agenten.');
-  if (UNLIMITED_BUILD) console.log('Baupunkte: unendlich (Schalter SILLYVAILLEY_BAUPUNKTE).');
+  if (UNLIMITED_BUILD) console.log('Baupunkte: unendlich (Schalter SILLYVALLEY_BAUPUNKTE).');
 });
 
 const shutdown = () => {

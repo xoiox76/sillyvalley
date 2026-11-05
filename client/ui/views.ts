@@ -2265,7 +2265,7 @@ export function topBar(s: Snapshot): Safe {
   const { company, money, system } = s;
   const low = money.remainingEur < company.budgetEur * 0.1;
   return html`
-    <a class="logo" href="#" data-action="to-start" aria-label="Zur Firmenauswahl">Silly Vailley</a>
+    <a class="logo" href="#" data-action="to-start" aria-label="Zur Firmenauswahl">Silly Valley</a>
     <span class="bar-sep"></span>
     <strong class="company-name">${company.name}</strong>
     <span class="bar-sep"></span>

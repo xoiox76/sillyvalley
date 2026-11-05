@@ -144,7 +144,7 @@ export function diffOf(worktree: string, base: string): string {
 export function commitAll(worktree: string, message: string, authorName: string): string | null {
   git(worktree, ['add', '--all']);
   if (!git(worktree, ['diff', '--cached', '--name-only']).trim()) return null;
-  git(worktree, ['-c', `user.name=${authorName}`, '-c', 'user.email=agent@sillyvailley.invalid', 'commit', '--quiet', '--no-gpg-sign', '-m', message]);
+  git(worktree, ['-c', `user.name=${authorName}`, '-c', 'user.email=agent@sillyvalley.invalid', 'commit', '--quiet', '--no-gpg-sign', '-m', message]);
   return git(worktree, ['rev-parse', 'HEAD']).trim();
 }
 

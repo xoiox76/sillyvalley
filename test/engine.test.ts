@@ -55,7 +55,7 @@ const orderInput = (agentId: string, title = 'Namen finden', extra = {}) => ({
 });
 
 before(async () => {
-  dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sillyvailley-test-'));
+  dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sillyvalley-test-'));
   engine = await makeEngine(dir);
 });
 after(() => {
@@ -520,7 +520,7 @@ test('Die Übergabe wird angezeigt und endet von selbst', async () => {
 });
 
 test('Aufträge aus Meilenstein 1 werden beim Laden zu einstufigen Aufträgen', async () => {
-  const data = fs.mkdtempSync(path.join(os.tmpdir(), 'sillyvailley-migration-'));
+  const data = fs.mkdtempSync(path.join(os.tmpdir(), 'sillyvalley-migration-'));
   const first = await makeEngine(data);
   const company = first.createCompany({ name: 'Alt', idea: 'x', locationId: 'garage', budgetEur: 5 });
   const agent = await first.hire(company.id, { name: 'Mila', roleId: 'planung', skillIds: [], modelId: 'claude-haiku-5-5', look: LOOK });
@@ -548,7 +548,7 @@ test('Aufträge aus Meilenstein 1 werden beim Laden zu einstufigen Aufträgen', 
 });
 
 test('Nach einem Neustart startet ein Auftrag zwischen zwei Stufen nicht von selbst weiter', async () => {
-  const data = fs.mkdtempSync(path.join(os.tmpdir(), 'sillyvailley-pause-'));
+  const data = fs.mkdtempSync(path.join(os.tmpdir(), 'sillyvalley-pause-'));
   const first = await makeEngine(data);
   const company = first.createCompany({ name: 'Pause', idea: 'x', locationId: 'garage', budgetEur: 5 });
   const agent = await first.hire(company.id, { name: 'Mila', roleId: 'planung', skillIds: [], modelId: 'claude-haiku-5-5', look: LOOK });
@@ -831,7 +831,7 @@ test('Ein Raum fasst nur eine Besprechung, und ein laufender Raum bleibt stehen'
 });
 
 test('Eine Besprechung übersteht einen Neustart nur als angehaltene', async () => {
-  const data = fs.mkdtempSync(path.join(os.tmpdir(), 'sillyvailley-besprechung-'));
+  const data = fs.mkdtempSync(path.join(os.tmpdir(), 'sillyvalley-besprechung-'));
   const first = await makeEngine(data);
   const company = first.createCompany({ name: 'Runde', idea: 'x', locationId: 'garage', budgetEur: 5 });
   company.buildPoints = 500;
@@ -861,7 +861,7 @@ test('Eine Besprechung übersteht einen Neustart nur als angehaltene', async () 
 });
 
 test('Firmen aus früheren Meilensteinen laden ohne Besprechungen', async () => {
-  const data = fs.mkdtempSync(path.join(os.tmpdir(), 'sillyvailley-altfirma-'));
+  const data = fs.mkdtempSync(path.join(os.tmpdir(), 'sillyvalley-altfirma-'));
   const first = await makeEngine(data);
   const company = first.createCompany({ name: 'Alt', idea: 'x', locationId: 'garage', budgetEur: 5 });
   first.shutdown();
@@ -876,7 +876,7 @@ test('Firmen aus früheren Meilensteinen laden ohne Besprechungen', async () => 
 });
 
 test('Nach einem Neustart zeigt keine Figur mehr Arbeit an', async () => {
-  const data = fs.mkdtempSync(path.join(os.tmpdir(), 'sillyvailley-neustart-'));
+  const data = fs.mkdtempSync(path.join(os.tmpdir(), 'sillyvalley-neustart-'));
   const first = await makeEngine(data);
   const company = first.createCompany({ name: 'Neustart', idea: 'x', locationId: 'garage', budgetEur: 5 });
   const agent = await first.hire(company.id, { name: 'Mila', roleId: 'planung', skillIds: [], modelId: 'claude-haiku-5-5', look: LOOK });
@@ -1062,7 +1062,7 @@ test('Eine unbrauchbare oder unterbrochene Planung hält das Projekt offen, stat
 });
 
 test('Eine Planung übersteht einen Neustart nur als offenes Projekt', async () => {
-  const data = fs.mkdtempSync(path.join(os.tmpdir(), 'sillyvailley-vorhaben-'));
+  const data = fs.mkdtempSync(path.join(os.tmpdir(), 'sillyvalley-vorhaben-'));
   const first = await makeEngine(data);
   const company = first.createCompany({ name: 'Plan', idea: 'x', locationId: 'garage', budgetEur: 5 });
   const a = await first.hire(company.id, { name: 'Mila', roleId: 'fuehrung', skillIds: ['fuehrung'], modelId: 'claude-haiku-5-5', look: LOOK });
@@ -1086,7 +1086,7 @@ test('Eine Planung übersteht einen Neustart nur als offenes Projekt', async () 
 });
 
 test('Firmen aus früheren Meilensteinen laden ohne Abteilungen und Projekt', async () => {
-  const data = fs.mkdtempSync(path.join(os.tmpdir(), 'sillyvailley-altfirma4-'));
+  const data = fs.mkdtempSync(path.join(os.tmpdir(), 'sillyvalley-altfirma4-'));
   const first = await makeEngine(data);
   const company = first.createCompany({ name: 'Alt', idea: 'x', locationId: 'garage', budgetEur: 5 });
   first.shutdown();
@@ -1121,7 +1121,7 @@ test('Das Schema des Managers lässt nur Teamnamen zu, und die Planung wird nich
 /* ---------- Zwischenschritt: bestehendes Projekt einbinden ---------- */
 
 test('Ein Projektordner wird geprüft, als "projekt/" gelistet und bleibt die einzige zweite Grenze', () => {
-  const project = fs.mkdtempSync(path.join(os.tmpdir(), 'sillyvailley-projekt-'));
+  const project = fs.mkdtempSync(path.join(os.tmpdir(), 'sillyvalley-projekt-'));
   fs.writeFileSync(path.join(project, 'README.md'), '# Mein Projekt\n');
   fs.mkdirSync(path.join(project, 'node_modules', 'x'), { recursive: true });
   fs.writeFileSync(path.join(project, 'node_modules', 'x', 'index.js'), '');
@@ -1129,7 +1129,7 @@ test('Ein Projektordner wird geprüft, als "projekt/" gelistet und bleibt die ei
   assert.throws(() => found('relativ/pfad'), /vollständigen Pfad/);
   assert.throws(() => found(path.join(project, 'gibt-es-nicht')), /gibt es nicht/);
   assert.throws(() => found(path.join(project, 'README.md')), /keine Datei/);
-  assert.throws(() => found(dir), /Daten von Silly Vailley/);
+  assert.throws(() => found(dir), /Daten von Silly Valley/);
   assert.throws(() => found(os.homedir()), /Zuhause/);
   const company = found(project);
   assert.equal(company.projectDir, fs.realpathSync(project));
@@ -1151,7 +1151,7 @@ test('Ein Projektordner wird geprüft, als "projekt/" gelistet und bleibt die ei
 });
 
 test('Ohne seinen Projektordner startet eine Firma keinen Lauf', async () => {
-  const project = fs.mkdtempSync(path.join(os.tmpdir(), 'sillyvailley-projekt-weg-'));
+  const project = fs.mkdtempSync(path.join(os.tmpdir(), 'sillyvalley-projekt-weg-'));
   const company = engine.createCompany({ name: 'Verloren', idea: 'x', locationId: 'garage', budgetEur: 5, projectDir: project });
   const agent = await hired(company.id);
   assert.match(company.runs.at(-1)!.prompt, /./);
@@ -1219,7 +1219,7 @@ test('Verträge mit unbekannter Rolle oder ohne Unterschrift stellen niemanden e
 });
 
 test('Mit dem Schalter kostet Bauen nichts, und die Oberfläche erfährt davon', async () => {
-  const data = fs.mkdtempSync(path.join(os.tmpdir(), 'sillyvailley-unendlich-'));
+  const data = fs.mkdtempSync(path.join(os.tmpdir(), 'sillyvalley-unendlich-'));
   const free = new Engine(data, createAnthropicProvider(FAKE), new FxSource(data, async () => ECB), 0, true);
   free.tourStepMs = 0;
   await free.init();
@@ -1326,7 +1326,7 @@ test('Mitten in der Arbeit zieht niemand um, gekauft werden darf trotzdem', asyn
 });
 
 test('Firmen aus früheren Ständen stehen danach am richtigen Ort der Stadt', async () => {
-  const data = fs.mkdtempSync(path.join(os.tmpdir(), 'sillyvailley-altstadt-'));
+  const data = fs.mkdtempSync(path.join(os.tmpdir(), 'sillyvalley-altstadt-'));
   const first = await makeEngine(data);
   const home = first.createCompany({ name: 'Zuhause', idea: 'x', locationId: 'kinderzimmer', budgetEur: 5 });
   const away = first.createCompany({ name: 'Post', idea: 'x', locationId: 'garage', budgetEur: 5 });
@@ -1478,7 +1478,7 @@ test('Die Belegung des Kontexts stammt aus der letzten Modellantwort, die Kosten
 });
 
 test('Firmen und Mitarbeiter aus früheren Ständen laden ohne Stelle, Teams und Kontext', async () => {
-  const data = fs.mkdtempSync(path.join(os.tmpdir(), 'sillyvailley-altstelle-'));
+  const data = fs.mkdtempSync(path.join(os.tmpdir(), 'sillyvalley-altstelle-'));
   const first = await makeEngine(data);
   const company = first.createCompany({ name: 'Alt', idea: 'x', locationId: 'garage', budgetEur: 5 });
   const agent = await first.hire(company.id, posting('Mila', { roleId: 'planung', skillIds: ['konzept'] }));
@@ -1504,7 +1504,7 @@ test('Firmen und Mitarbeiter aus früheren Ständen laden ohne Stelle, Teams und
 /* ---------- Subagents aus dem eingebundenen Projekt ---------- */
 
 function subagentProject() {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sillyvailley-subagenten-'));
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sillyvalley-subagenten-'));
   const dir = path.join(root, '.claude', 'agents');
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, 'entwickler.md'), '---\nname: entwickler\ndescription: Setzt Pakete um.\nmodel: sonnet\n---\n\nDu baust die App.\n');
@@ -1574,7 +1574,7 @@ test('Ein Subagent wird echter Mitarbeiter und bekommt nicht mehr Rechte als in 
 
 /** Firma mit Projekt und einem übernommenen Subagent, der Befehle beantragen darf. */
 async function commandCompany(file = '---\nname: macher\ndescription: Macht.\ntools: Read, Write, Bash\nmodel: haiku\n---\n\nDu machst.\n') {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sillyvailley-befehl-'));
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sillyvalley-befehl-'));
   fs.mkdirSync(path.join(root, '.claude', 'agents'), { recursive: true });
   fs.writeFileSync(path.join(root, '.claude', 'agents', 'macher.md'), file);
   const company = engine.createCompany({ name: 'Befehlsfirma', idea: 'x', locationId: 'garage', budgetEur: 5, projectDir: root });
@@ -1690,14 +1690,14 @@ test('Ein gestoppter Auftrag lässt seinen Antrag verfallen, ein laufender Befeh
 });
 
 test('Ein Befehl sieht keine Geheimnisse aus der Umgebung, und Fehlschläge kommen beim Agenten an', async () => {
-  process.env.SILLYVAILLEY_TEST_GEHEIMNIS = 'streng-geheim';
+  process.env.SILLYVALLEY_TEST_GEHEIMNIS = 'streng-geheim';
   const { company, agent, root } = await commandCompany();
-  await engine.chat(company.id, agent.id, '[szenario:befehl] [befehl:echo "wert=$SILLYVAILLEY_TEST_GEHEIMNIS"; exit 3] Bitte');
+  await engine.chat(company.id, agent.id, '[szenario:befehl] [befehl:echo "wert=$SILLYVALLEY_TEST_GEHEIMNIS"; exit 3] Bitte');
   await until(() => company.commands.length === 1 && idle(company), 'Antrag');
   const request = company.commands[0];
   await engine.decideCommand(company.id, request.id, { decision: 'approve' });
   await until(() => request.delivered && idle(company), 'Ergebnis');
-  delete process.env.SILLYVAILLEY_TEST_GEHEIMNIS;
+  delete process.env.SILLYVALLEY_TEST_GEHEIMNIS;
   assert.equal(request.status, 'failed');
   assert.equal(request.exitCode, 3);
   assert.equal(request.output.trim(), 'wert=', 'Die Umgebung des Spiels bleibt draußen');
@@ -1721,8 +1721,8 @@ test('Anträge werden streng gelesen, und riskante Befehle tragen eine Warnung',
 });
 
 test('Über einen Neustart läuft kein Befehl weiter, und offene Anträge eines Auftrags verfallen', async () => {
-  const data = fs.mkdtempSync(path.join(os.tmpdir(), 'sillyvailley-befehlneu-'));
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sillyvailley-befehlprojekt-'));
+  const data = fs.mkdtempSync(path.join(os.tmpdir(), 'sillyvalley-befehlneu-'));
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sillyvalley-befehlprojekt-'));
   fs.mkdirSync(path.join(root, '.claude', 'agents'), { recursive: true });
   fs.writeFileSync(path.join(root, '.claude', 'agents', 'macher.md'), '---\nname: macher\ndescription: Macht.\ntools: Bash\nmodel: haiku\n---\n\nDu machst.\n');
   const first = await makeEngine(data);
@@ -1864,7 +1864,7 @@ test('Vertrag: Der Manager kann eine definierte Rolle vorschlagen, die Person ko
 });
 
 test('Alte Spielstände bekommen Rollen und Teamleitung', async () => {
-  const data = fs.mkdtempSync(path.join(os.tmpdir(), 'sillyvailley-alt-'));
+  const data = fs.mkdtempSync(path.join(os.tmpdir(), 'sillyvalley-alt-'));
   const first = await makeEngine(data);
   const company = first.createCompany({ name: 'Alt', idea: 'Idee', locationId: 'garage', budgetEur: 5 });
   const file = path.join(data, 'companies', company.id, 'company.json');
@@ -2343,7 +2343,7 @@ test('Kennenlernen: Kommt Arbeit dazwischen, endet die Runde, das Wissen bleibt'
 });
 
 test('Hilfe: Ein Neustart beendet eine offene Anfrage, und niemand bleibt beim Warten stehen', async () => {
-  const data = fs.mkdtempSync(path.join(os.tmpdir(), 'sillyvailley-hilfe-'));
+  const data = fs.mkdtempSync(path.join(os.tmpdir(), 'sillyvalley-hilfe-'));
   const first = await makeEngine(data);
   const company = first.createCompany({ name: 'Neustart', idea: 'x', locationId: 'garage', budgetEur: 5 });
   company.buildPoints = 100;

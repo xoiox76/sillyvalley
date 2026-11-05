@@ -11,10 +11,10 @@ let toolPath = settings["SVPath"] as? String ?? "/usr/bin:/bin"
 let environment = ProcessInfo.processInfo.environment
 let port = environment["PORT"] ?? "4600"
 let gameURL = URL(string: "http://localhost:\(port)/")!
-let logFile = NSString(string: "~/Library/Logs/Silly Vailley.log").expandingTildeInPath
+let logFile = NSString(string: "~/Library/Logs/Silly Valley.log").expandingTildeInPath
 
 let waitingPage = """
-<!doctype html><meta charset="utf-8"><body style="margin:0;height:100vh;display:flex;align-items:center;justify-content:center;background:#0f1a2b;color:#e8f0f7;font:20px Menlo,monospace">Silly Vailley startet ...</body>
+<!doctype html><meta charset="utf-8"><body style="margin:0;height:100vh;display:flex;align-items:center;justify-content:center;background:#0f1a2b;color:#e8f0f7;font:20px Menlo,monospace">Silly Valley startet ...</body>
 """
 
 final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDelegate {
@@ -33,11 +33,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     web.loadHTMLString(waitingPage, baseURL: nil)
 
     window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1280, height: 820), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
-    window.title = "Silly Vailley"
+    window.title = "Silly Valley"
     window.contentView = web
     window.minSize = NSSize(width: 800, height: 560)
-    window.setFrameAutosaveName("SillyVailleyFenster")
-    if !window.setFrameUsingName("SillyVailleyFenster") { window.center() }
+    window.setFrameAutosaveName("SillyValleyFenster")
+    if !window.setFrameUsingName("SillyValleyFenster") { window.center() }
     window.makeKeyAndOrderFront(nil)
     NSApp.activate(ignoringOtherApps: true)
 
@@ -110,7 +110,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     process.currentDirectoryURL = URL(fileURLWithPath: projectDir)
     var env = environment
     env["PATH"] = toolPath
-    env["SILLYVAILLEY_BAUPUNKTE"] = env["SILLYVAILLEY_BAUPUNKTE"] ?? "unendlich"
+    env["SILLYVALLEY_BAUPUNKTE"] = env["SILLYVALLEY_BAUPUNKTE"] ?? "unendlich"
     process.environment = env
     FileManager.default.createFile(atPath: logFile, contents: nil)
     if let log = FileHandle(forWritingAtPath: logFile) {
@@ -139,7 +139,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
 
   func fail(_ text: String) {
     let alert = NSAlert()
-    alert.messageText = "Silly Vailley startet nicht"
+    alert.messageText = "Silly Valley startet nicht"
     alert.informativeText = text
     alert.runModal()
     NSApp.terminate(nil)
@@ -180,7 +180,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
       main.addItem(holder)
     }
     let item = { (title: String, action: Selector, key: String) in NSMenuItem(title: title, action: action, keyEquivalent: key) }
-    add("Silly Vailley", [item("Silly Vailley ausblenden", #selector(NSApplication.hide(_:)), "h"), .separator(), item("Silly Vailley beenden", #selector(NSApplication.terminate(_:)), "q")])
+    add("Silly Valley", [item("Silly Valley ausblenden", #selector(NSApplication.hide(_:)), "h"), .separator(), item("Silly Valley beenden", #selector(NSApplication.terminate(_:)), "q")])
     // Ohne dieses Menü funktionieren Kopieren und Einsetzen in den Textfeldern nicht.
     add("Bearbeiten", [
       item("Widerrufen", Selector(("undo:")), "z"), item("Wiederholen", Selector(("redo:")), "Z"), .separator(),

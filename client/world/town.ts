@@ -90,7 +90,7 @@ export class TownView {
     this.canvas = document.createElement('canvas');
     this.canvas.className = 'world-canvas';
     this.canvas.setAttribute('role', 'img');
-    this.canvas.setAttribute('aria-label', 'Die Stadt Silly Vailley. Laufe per Klick oder mit den Pfeiltasten.');
+    this.canvas.setAttribute('aria-label', 'Die Stadt Silly Valley. Laufe per Klick oder mit den Pfeiltasten.');
     this.screen = this.canvas.getContext('2d')!;
     this.labels = document.createElement('div');
     this.labels.className = 'world-labels';

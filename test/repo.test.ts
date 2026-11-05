@@ -83,7 +83,7 @@ test('Abnahme: eigener Branch, Checkout unberührt, Hochladen erst auf Klick', a
   engine.decide(company.id, order.id, { decision: 'accept', checked: [true] });
   assert.ok(order.git!.commit, 'Abnehmen committet');
   assert.equal(sh(remote, 'branch', '--list', order.git!.branch), '', 'Noch ist nichts hochgeladen');
-  assert.equal(sh(checkout, 'log', '-1', '--format=%an <%ae>', order.git!.branch), 'Mila <agent@sillyvailley.invalid>', 'Keine persönliche Adresse');
+  assert.equal(sh(checkout, 'log', '-1', '--format=%an <%ae>', order.git!.branch), 'Mila <agent@sillyvalley.invalid>', 'Keine persönliche Adresse');
   await engine.pushOrder(company.id, order.id);
   assert.ok(order.git!.pushedAt);
   assert.match(sh(remote, 'branch', '--list', order.git!.branch), /auftrag/);
