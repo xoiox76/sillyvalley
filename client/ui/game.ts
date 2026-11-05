@@ -173,6 +173,9 @@ export function renderGame(root: HTMLElement, companyId: string, onLeave: () => 
       tab = 'team';
       render();
     },
+    onDoor() {
+      goOutside();
+    },
     onBoardClick() {
       tab = 'projekte';
       els.panel.scrollTop = 0;
@@ -293,7 +296,7 @@ export function renderGame(root: HTMLElement, companyId: string, onLeave: () => 
   /** Die Mitarbeiterakten am Laptop. */
   function openFiles(): void {
     const first = snap?.company.agents.find((a) => a.hired && !a.firedAt) ?? snap?.company.agents[0];
-    modal = { type: 'files', draft: { app: null, connectionKind: 'openai', mailId: null, roadmapOwner: null, filePath: null, fileDoc: null, agentId: first?.id ?? null, roleId: null, roleText: ROLE_TEMPLATE, roleKey: 0, roleError: '', roleNote: '' } };
+    modal = { type: 'files', draft: { app: null, browserFrom: null, browserKey: 0, diff: null, connectionKind: 'openai', mailId: null, roadmapOwner: null, filePath: null, fileDoc: null, agentId: first?.id ?? null, roleId: null, roleText: ROLE_TEMPLATE, roleKey: 0, roleError: '', roleNote: '' } };
     refreshProjectAgents();
     refreshFiles();
     render();
@@ -1013,7 +1016,33 @@ export function renderGame(root: HTMLElement, companyId: string, onLeave: () => 
       const order = snap?.company.orders.find((o) => o.id === el.dataset.order);
       if (order) openViewer(order.files, el.dataset.path!, order.title);
     },
+    'browser-open'(el) {
+      if (modal?.type !== 'files') return;
+      openInBrowser(modal.draft, el.dataset.path!);
+    },
+    'browser-back'() {
+      if (modal?.type !== 'files' || !modal.draft.browserFrom) return;
+      modal.draft.app = modal.draft.browserFrom;
+      modal.draft.browserFrom = null;
+      render();
+    },
+    'browser-reload'() {
+      if (modal?.type !== 'files') return;
+      modal.draft.browserKey += 1;
+      render();
+    },
+    'browser-home'() {
+      if (modal?.type !== 'files') return;
+      modal.draft.filePath = null;
+      modal.draft.fileDoc = null;
+      render();
+    },
     'open-file'(el) {
+      // Auf dem Laptop bleibt alles auf dem Laptop.
+      if (modal?.type === 'files') {
+        openInBrowser(modal.draft, el.dataset.path!);
+        return;
+      }
       openViewer([el.dataset.path!], el.dataset.path!, 'Arbeitsbereich');
     },
     'viewer-file'(el) {
@@ -1070,7 +1099,8 @@ export function renderGame(root: HTMLElement, companyId: string, onLeave: () => 
       if (modal?.type !== 'files') return;
       modal.draft.app = el.dataset.id as FilesDraft['app'];
       modal.draft.mailId = null;
-      if (modal.draft.app === 'dateien') refreshFiles();
+      modal.draft.browserFrom = null;
+      if (modal.draft.app === 'dateien' || modal.draft.app === 'browser') refreshFiles();
       render();
     },
     'connection-kind'(el) {
@@ -1111,9 +1141,29 @@ export function renderGame(root: HTMLElement, companyId: string, onLeave: () => 
       if (!order) return;
       modal.draft.app = 'nachrichten';
       modal.draft.mailId = order.id;
+      modal.draft.diff = null;
       const first = order.files.find((path) => !/\/pruefung-\d+\.md$/.test(path));
       if (first) showFile(modal.draft, first);
       else render();
+    },
+    async 'git-diff'(el) {
+      if (modal?.type !== 'files') return;
+      const draft = modal.draft;
+      try {
+        draft.diff = (await api.orderDiff(companyId, el.dataset.id!)).diff;
+      } catch (err) {
+        fail(err);
+      }
+      render();
+    },
+    async 'git-push'(el) {
+      await api.pushOrder(companyId, el.dataset.id!).catch(fail);
+    },
+    async 'git-pr'(el) {
+      await api.openOrderPr(companyId, el.dataset.id!).catch(fail);
+    },
+    async 'repo-disconnect'() {
+      await api.disconnectRepo(companyId).catch(fail);
     },
     'mail-close'() {
       if (modal?.type !== 'files') return;
@@ -1225,9 +1275,6 @@ export function renderGame(root: HTMLElement, companyId: string, onLeave: () => 
       }
       render();
     },
-    'go-outside'() {
-      goOutside();
-    },
     'go-inside'() {
       goInside();
     },
@@ -1245,6 +1292,13 @@ export function renderGame(root: HTMLElement, companyId: string, onLeave: () => 
       render();
     },
   };
+
+  function openInBrowser(draft: FilesDraft, path: string): void {
+    if (draft.app !== 'browser') draft.browserFrom = draft.app;
+    draft.app = 'browser';
+    draft.browserKey += 1;
+    showFile(draft, path);
+  }
 
   /** Die Vorschau in Dateien und Post. */
   function showFile(draft: FilesDraft, path: string): void {
@@ -1429,6 +1483,13 @@ export function renderGame(root: HTMLElement, companyId: string, onLeave: () => 
         draft.busy = false;
         draft.error = (err as Error).message;
         render();
+      }
+    } else if (kind === 'repo') {
+      try {
+        await api.connectRepo(companyId, String(data.get('source') ?? ''));
+        toast('info', 'Repo verbunden.');
+      } catch (err) {
+        fail(err);
       }
     } else if (kind === 'connection') {
       try {
@@ -1666,6 +1727,13 @@ export function renderGame(root: HTMLElement, companyId: string, onLeave: () => 
       }
     }
     if (event.key !== 'Escape') return;
+    // Im Browser führt Esc zurück. Den Laptop klappt nur "Zuklappen" zu oder Esc auf dem Schreibtisch.
+    if (modal?.type === 'files' && modal.draft.app === 'browser' && modal.draft.browserFrom) {
+      modal.draft.app = modal.draft.browserFrom;
+      modal.draft.browserFrom = null;
+      render();
+      return;
+    }
     if (modal) {
       modal = null;
       render();

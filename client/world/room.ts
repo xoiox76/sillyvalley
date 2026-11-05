@@ -19,6 +19,8 @@ export interface Room {
   height: number;
   /** Pinnwand auf der hinteren rechten Wand. u, v in Pixel. */
   board: { u: number; v: number; w: number; h: number };
+  /** Wo man hinausgeht. u in Pixel entlang der Wand. Die Welt prüft darauf Klicks. */
+  doors: { face: 'J' | 'I'; u: number; w: number; h: number }[];
 }
 
 interface Theme {
@@ -345,6 +347,11 @@ export function buildRoom(loc: LocationInfo, level = 0): Room {
   }
 
   // Wanddeko und Türen
+  const doors: Room['doors'] = [];
+  const addDoor = (u: number) => {
+    drawDoor(pen, 'J', u);
+    doors.push({ face: 'J', u: u - 2, w: 17, h: 40 });
+  };
   if (loc.id === 'kinderzimmer') {
     drawWindow(pen, 'I', 62, 22, 22, 18);
     drawPoster(pen, 'I', 40, 22, 12, 16, ['#e5534b', '#f8b62d', '#3f7fd0']);
@@ -352,11 +359,12 @@ export function buildRoom(loc: LocationInfo, level = 0): Room {
     for (const [u, v] of [[8, 46], [20, 40], [90, 44]]) {
       pen.faceI(0, 0, 0, u % 92, v, 2, 2, '#f8e27a');
     }
-    if (level === 0) drawDoor(pen, 'J', W * 16 - 14);
+    if (level === 0) addDoor(W * 16 - 14);
   } else if (loc.id === 'garage') {
     drawRollerDoor(pen, 44, 46);
+    if (level === 0) doors.push({ face: 'I', u: 42, w: 50, h: 42 });
     drawWindow(pen, 'J', 56, 26, 24, 13);
-    drawDoor(pen, 'J', 96);
+    addDoor(96);
   } else {
     drawWindow(pen, 'I', 28, 24, 30, 18);
     drawWindow(pen, 'I', 76, 24, 30, 18);
@@ -368,7 +376,7 @@ export function buildRoom(loc: LocationInfo, level = 0): Room {
     if (level > 0) drawPoster(pen, 'J', 24, 24, 30, 18, ['#3f7fd0', '#e8c46a', '#2fa58f']);
     // Steckdosen über der Fussleiste
     for (let u = 40; u < W * 16 - 20; u += 72) pen.faceJ(0, 0, 0, u, 6, 3, 3, '#e6e4da');
-    if (level === 0) drawDoor(pen, 'J', W * 16 - 14);
+    if (level === 0) addDoor(W * 16 - 14);
   }
 
   // Pinnwandrahmen. Die Zettel darauf zeichnet die Welt je nach echten Aufträgen.
@@ -408,7 +416,7 @@ export function buildRoom(loc: LocationInfo, level = 0): Room {
   for (let k = stepI; k < W; k += stepI) fp.box(k - 0.14, D - 0.04, 0, 0.28, THICK + 0.08, FRONT_H + 5, pillar);
   for (let k = stepJ; k < D; k += stepJ) fp.box(W - 0.04, k - 0.14, 0, THICK + 0.08, 0.28, FRONT_H + 5, pillar);
 
-  return { base, front, pen, width, height, board: b };
+  return { base, front, pen, width, height, board: b, doors };
 }
 
 export function waterPattern(): Layer {

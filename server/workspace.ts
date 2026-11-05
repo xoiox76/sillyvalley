@@ -6,6 +6,8 @@ import path from 'node:path';
 
 export const WORKSPACE_DIRS = ['team', 'wissen', 'dateien', 'auftraege', 'ergebnisse', 'besprechungen'];
 export const PROJECT_PREFIX = 'projekt';
+export const BRANCHES_DIR = 'zweige';
+export const READ_DIR = `${BRANCHES_DIR}/lesen`;
 
 /** Ordner, die kein Agent und keine Liste braucht. Sie würden die Dateiliste sprengen. */
 const IGNORED_DIRS = new Set(['node_modules', 'dist', 'build', 'out', 'target', 'vendor', '__pycache__', 'coverage']);
@@ -32,6 +34,8 @@ export function listFiles(root: string, sub = '', out: FileEntry[] = []): FileEn
   for (const entry of entries) {
     if (out.length >= MAX_FILES) break;
     if (entry.name.startsWith('.') || entry.isSymbolicLink()) continue;
+    // Die Arbeitsordner der Branches zeigt die Post als Änderungen. In der Dateiliste wären sie ein zweites Repo.
+    if (!sub && entry.name === BRANCHES_DIR) continue;
     const rel = sub ? `${sub}/${entry.name}` : entry.name;
     if (entry.isDirectory()) {
       if (!IGNORED_DIRS.has(entry.name)) listFiles(root, rel, out);

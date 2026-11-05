@@ -433,6 +433,47 @@ function paintSign(el: HTMLElement, boards: FirmBoard[], note: string): void {
 
 const originX = () => TOWN_D * 16 + MARGIN;
 
+export interface TownBackdrop {
+  image: Layer;
+  /** Die Mitte des eigenen Grundstücks im Bild. */
+  x: number;
+  y: number;
+  /** So oft ist die Stadt zu vergrössern, damit das Büro auf sein Grundstück passt. */
+  zoom: number;
+}
+
+let backdropCache: { key: string; backdrop: TownBackdrop } | null = null;
+
+/** Die echte Stadt rund um den Standort der Firma, ohne das eigene Haus: An dessen Stelle steht das Büro. */
+export function townBackdrop(company: Company, roomW: number, roomD: number): TownBackdrop | null {
+  const site = parcelById(company.town.siteId);
+  if (!site) return null;
+  const key = `${JSON.stringify(company.town)}:${roomW}x${roomD}`;
+  if (backdropCache?.key === key) return backdropCache.backdrop;
+  const ground = buildGround();
+  const image = layer(ground.canvas.width, ground.canvas.height);
+  const field = grassField();
+  for (let y = 0; y < image.canvas.height; y += 64) for (let x = 0; x < image.canvas.width; x += 64) image.ctx.drawImage(field.canvas, x, y);
+  image.ctx.drawImage(ground.canvas, 0, 0);
+  const trees = [buildTree(0), buildTree(1), buildTree(2)];
+  const parts: { i: number; j: number; w: number; d: number; draw: () => void }[] = [
+    ...buildPieces(company, site.id).map((part) => ({ i: part.i, j: part.j, w: part.w, d: part.d, draw: () => image.ctx.drawImage(part.image.canvas, part.left, part.top) })),
+    ...TREES.filter((t) => !inParcel(site, t)).map((t) => ({
+      i: t.i, j: t.j, w: 1, d: 1,
+      draw: () => image.ctx.drawImage(trees[(t.i * 7 + t.j * 3) % 3].canvas, originX() + (t.i - t.j) * 16 - 16, TOP + (t.i + t.j) * 8 - 40),
+    })),
+  ].sort((a, b) => a.i + a.w + a.j + a.d - (b.i + b.w + b.j + b.d));
+  for (const part of parts) part.draw();
+  const backdrop: TownBackdrop = {
+    image,
+    x: originX() + (site.i + site.w / 2 - site.j - site.d / 2) * 16,
+    y: TOP + (site.i + site.w / 2 + site.j + site.d / 2) * 8,
+    zoom: Math.max(1, Math.min(4, Math.ceil(Math.max(roomW / site.w, roomD / site.d)))),
+  };
+  backdropCache = { key, backdrop };
+  return backdrop;
+}
+
 function grassField(): Layer {
   const l = layer(64, 64);
   rect(l.ctx, 0, 0, 64, 64, '#3f7d48');
@@ -561,9 +602,10 @@ function buildTree(variant = 0): Layer {
 }
 
 /** Jedes Gebäude bekommt ein eigenes Bild, damit die Figur korrekt davor oder dahinter gehen kann. */
-function buildPieces(company: Company): Piece[] {
+function buildPieces(company: Company, without: string | null = null): Piece[] {
   const pieces: Piece[] = [];
   for (const p of PARCELS) {
+    if (p.id === without) continue;
     if (p.kind === 'lot') {
       pieces.push(paintLot(p, company));
     } else if (p.building) {

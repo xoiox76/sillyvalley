@@ -42,6 +42,12 @@ if (scenario === 'absturz') {
   process.exit(3);
 }
 
+// "repo" ändert im Ordner, den der Auftrag nennt. "gitkaputt" überschreibt dort die Datei .git, wie ein ungehorsames Modell.
+const branchDir = prompt.match(/zweige\/[\w-]+/)?.[0];
+if ((scenario === 'repo' || scenario === 'gitkaputt') && branchDir) {
+  fs.writeFileSync(path.join(branchDir, 'neu.txt'), 'vom Agenten\n');
+  if (scenario === 'gitkaputt') fs.writeFileSync(path.join(branchDir, '.git'), 'gitdir: /tmp/woanders\n');
+}
 const schemaArg = arg('--json-schema');
 const tools = (arg('--tools') ?? '').split(',');
 const target = prompt.match(/ergebnisse\/[\w-]+/)?.[0];

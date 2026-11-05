@@ -45,11 +45,17 @@ export interface NoteDraft {
   note?: BoardItem;
 }
 
-export type LaptopApp = 'nachrichten' | 'roadmap' | 'dateien' | 'akten' | 'rollen' | 'sprint' | 'einstellungen';
+export type LaptopApp = 'hilfe' | 'nachrichten' | 'browser' | 'roadmap' | 'dateien' | 'akten' | 'rollen' | 'sprint' | 'einstellungen';
 
 export interface FilesDraft {
   /** null: der Schreibtisch von PineappleOS, kein Programm offen. */
   app: LaptopApp | null;
+  /** Woher der Browser geöffnet wurde. Dorthin führt Zurück. */
+  browserFrom: LaptopApp | null;
+  /** Wechselt beim Neuladen, damit die Seite wirklich neu lädt. */
+  browserKey: number;
+  /** Die Änderungen des offenen Auftrags im Repo. null: noch nicht geladen. */
+  diff: string | null;
   /** Welcher Anbieter gerade verbunden wird. */
   connectionKind: string;
   /** Die offene Mail in der Post: der Auftrag dahinter. */
@@ -736,6 +742,7 @@ function laptopApps(s: Snapshot, files: FileEntry[]): { id: LaptopApp; title: st
   const sprint = openSprint(company);
   return [
     { id: 'nachrichten', title: 'Post', hint: 'Ergebnisse und alles, was auf deine Entscheidung wartet', glyph: '@', badge: openMessages(s) },
+    { id: 'browser', title: 'Browser', hint: 'Ergebnisse direkt auf dem Laptop ansehen', glyph: '◎', badge: 0 },
     { id: 'roadmap', title: 'Roadmap', hint: 'Alle Aufgaben und wer sie verantwortet', glyph: '»', badge: 0 },
     { id: 'dateien', title: 'Dateien', hint: `Dateien der Firma, ${files.length} insgesamt`, glyph: '▤', badge: 0 },
     { id: 'akten', title: 'Akten', hint: 'Mitarbeiterakten mit Kosten und Ergebnissen', glyph: '☰', badge: 0 },
@@ -743,6 +750,7 @@ function laptopApps(s: Snapshot, files: FileEntry[]): { id: LaptopApp; title: st
     ...(scrumMaster(company) || sprint || (company.sprints ?? []).length
       ? [{ id: 'sprint' as const, title: 'Sprint', hint: sprint ? `Sprint ${sprint.number}: ${SPRINT_STATUS[sprint.status]}` : 'Kein Sprint offen', glyph: '▦', badge: 0 }]
       : []),
+    { id: 'hilfe', title: 'Tastenkürzel', hint: 'Alle Tastenkürzel des Spiels', glyph: '?', badge: 0 },
     { id: 'einstellungen', title: 'Einstellungen', hint: 'Anbieter und Modelle verbinden', glyph: '*', badge: 0 },
   ];
 }
@@ -760,6 +768,8 @@ export function laptopModal(s: Snapshot, draft: FilesDraft, projectAgents: Proje
   const time = new Date().toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' });
   const content = (id: LaptopApp) =>
     id === 'nachrichten' ? messagesApp(s, projectAgents, draft, companyId)
+    : id === 'hilfe' ? shortcutsApp()
+    : id === 'browser' ? browserApp(s, draft, files, companyId)
     : id === 'roadmap' ? roadmapApp(s, draft)
     : id === 'einstellungen' ? settingsApp(s, draft)
     : id === 'rollen' ? rolesApp(s, draft)
@@ -786,12 +796,63 @@ export function laptopModal(s: Snapshot, draft: FilesDraft, projectAgents: Proje
   </div>`;
 }
 
+const SHORTCUTS: { title: string; keys: [string, string][] }[] = [
+  { title: 'Im Büro und in der Stadt', keys: [
+    ['Pfeiltasten oder W A S D', 'laufen'],
+    ['+ und -', 'zoomen, auch mit dem Mausrad'],
+    ['0', 'Ansicht zurücksetzen'],
+    ['Ziehen mit der Maus', 'Ansicht verschieben'],
+    ['Bild auf, Bild ab', 'Etage wechseln'],
+    ['Enter', 'am Chefplatz sitzend den Laptop öffnen'],
+  ] },
+  { title: 'Im Bau-Modus', keys: [
+    ['Klick oder Enter', 'abstellen'],
+    ['R oder Rechtsklick', 'drehen, beim Aufgang die Seite wählen'],
+    ['I', 'ins Inventar legen'],
+    ['Entf oder Rücktaste', 'löschen, ein zweiter Druck bestätigt'],
+    ['Esc', 'abbrechen'],
+  ] },
+  { title: 'Fenster und Laptop', keys: [
+    ['Esc', 'im Browser zurück, sonst das Fenster schliessen'],
+  ] },
+  { title: 'In der Mac-App', keys: [
+    ['Cmd + R', 'neu laden'],
+    ['Cmd + F', 'Vollbild'],
+    ['Cmd + M', 'ins Dock'],
+    ['Cmd + H', 'ausblenden'],
+    ['Cmd + W oder Cmd + Q', 'beenden'],
+  ] },
+];
+
+function shortcutsApp(): Safe {
+  return html`<div class="modal-body shortcuts">${SHORTCUTS.map((group) => html`<section data-key="${group.title}"><h3>${group.title}</h3>
+    <ul class="key-legend">${group.keys.map(([key, text]) => html`<li data-key="${key}"><kbd>${key}</kbd> ${text}</li>`)}</ul></section>`)}</div>`;
+}
+
+/** Der Browser des Laptops. Ergebnisse laufen hier abgeschirmt, und nichts öffnet ein neues Fenster ausserhalb des Spiels. */
+function browserApp(s: Snapshot, draft: FilesDraft, files: FileEntry[], companyId: string): Safe {
+  const path = draft.filePath;
+  const pages = files.filter((f) => /\.html?$/i.test(f.path));
+  return html`<div class="browser">
+    <div class="browser-bar">
+      <button class="btn btn-small" data-action="browser-back" ${draft.browserFrom ? '' : 'disabled'} aria-label="Zurück">←</button>
+      <button class="btn btn-small" data-action="browser-reload" ${path ? '' : 'disabled'} aria-label="Neu laden">↻</button>
+      <span class="browser-address">${path ?? 'Startseite'}</span>
+      ${path ? html`<button class="btn btn-small" data-action="browser-home">Startseite</button>` : null}
+    </div>
+    ${path
+      ? html`<div class="browser-page" data-key="seite-${draft.browserKey}">${fileContent(companyId, path, draft.fileDoc, s.system.artifactPort)}</div>`
+      : html`<div class="modal-body"><h3>Ergebnisse zum Öffnen</h3>
+        ${pages.length ? html`<ul class="mail-list">${pages.map((f) => html`<li data-key="${f.path}"><button class="mail-row browser-link" data-action="browser-open" data-path="${f.path}"><span class="mail-subject">${f.path}</span></button></li>`)}</ul>` : html`<p class="hint">Noch keine HTML-Ergebnisse.</p>`}
+      </div>`}
+  </div>`;
+}
+
 /** Der Dateimanager: alles, was die Firma hat, und was sich davon starten lässt. */
 function shellApp(s: Snapshot, draft: FilesDraft, files: FileEntry[], folds: WorkspaceFolds, companyId: string): Safe {
   const path = draft.filePath && files.some((f) => f.path === draft.filePath) ? draft.filePath : null;
   const ext = path?.split('.').pop()?.toLowerCase() ?? '';
   const runnable = ext === 'html' || ext === 'htm';
-  const artifact = path ? api.artifactUrl(s.system.artifactPort, companyId, path) : '';
   return html`<div class="modal-body shell-grid">
     <nav class="shell-tree" aria-label="Dateien">
       ${s.company.projectDir ? html`<p class="hint">Projektordner: <code>projekt/</code></p>` : null}
@@ -801,7 +862,7 @@ function shellApp(s: Snapshot, draft: FilesDraft, files: FileEntry[], folds: Wor
       ${path ? html`
         <div class="md-bar"><strong class="shell-name">${path}</strong>
           <span class="btn-row">
-            ${runnable ? html`<a class="btn btn-primary btn-small" href="${artifact}" target="_blank" rel="noopener">Starten</a>` : null}
+            ${runnable ? html`<button class="btn btn-primary btn-small" data-action="browser-open" data-path="${path}">Im Browser öffnen</button>` : null}
             <a class="btn btn-small" href="${api.fileUrl(companyId, path, true)}" download>Laden</a>
           </span></div>
         <div class="viewer-body shell-preview">${fileContent(companyId, path, draft.fileDoc, s.system.artifactPort)}</div>`
@@ -904,6 +965,34 @@ function sprintBoard(s: Snapshot, sprint: Sprint): Safe {
   </div>`;
 }
 
+/** Ein Diff, Zeile für Zeile eingefärbt. */
+function diffView(text: string): Safe {
+  const kind = (line: string) => (line.startsWith('+++') || line.startsWith('---') || line.startsWith('diff ') || line.startsWith('index ') ? 'head' : line.startsWith('@@') ? 'hunk' : line.startsWith('+') ? 'add' : line.startsWith('-') ? 'del' : '');
+  return html`<pre class="diff">${text.split('\n').slice(0, 4000).map((line) => html`<span class="diff-${kind(line)}">${line}\n</span>`)}</pre>`;
+}
+
+/** Was der Auftrag im Repo geändert hat. Hinaus geht es erst mit einem Klick von dir. */
+function gitBox(s: Snapshot, order: Order, draft: FilesDraft): Safe {
+  const git = order.git!;
+  const repo = s.company.repo;
+  const decided = order.status === 'accepted' || order.status === 'rejected';
+  const nothing = decided && !git.commit;
+  return html`<section class="git-box" data-key="git-${order.id}">
+    <h4>Repo</h4>
+    <p class="hint">Branch <code>${git.branch}</code>${nothing ? (order.status === 'rejected' ? ' wurde mit der Ablehnung gelöscht.' : ' enthielt keine Änderung und wurde gelöscht.') : git.commit ? `, Commit ${git.commit.slice(0, 7)}.` : ', noch nicht committet.'}</p>
+    ${nothing ? null : html`<div class="btn-row">
+      <button class="btn btn-small" data-action="git-diff" data-id="${order.id}">${draft.diff === null ? 'Änderungen zeigen' : 'Änderungen neu laden'}</button>
+      ${order.status === 'accepted' && git.commit && repo?.remote ? html`
+        ${git.pushedAt ? null : html`<button class="btn btn-small" data-action="git-push" data-id="${order.id}">Branch hochladen</button>`}
+        ${git.prUrl ? html`<a class="btn btn-small" href="${git.prUrl}" target="_blank" rel="noopener">Pull Request öffnen</a>` : html`<button class="btn btn-primary btn-small" data-action="git-pr" data-id="${order.id}">Pull Request erstellen</button>`}` : null}
+    </div>`}
+    ${order.status === 'review' ? html`<p class="hint">Abnehmen committet nur auf diesen Branch. Hochladen entscheidest du danach. Ablehnen löscht ihn.</p>` : null}
+    ${order.status === 'accepted' && git.commit && !repo?.remote ? html`<p class="hint">Dieses Repo hat kein Ziel zum Hochladen. Der Commit bleibt lokal auf dem Branch.</p>` : null}
+    ${git.pushedAt ? html`<p class="hint">Hochgeladen am ${time(git.pushedAt)}.</p>` : null}
+    ${draft.diff !== null && !nothing ? (draft.diff ? diffView(draft.diff) : html`<p class="hint">Keine Änderungen.</p>`) : null}
+  </section>`;
+}
+
 /** Eine Ergebnis-Mail: Was geliefert wurde, die Datei zum Prüfen und die Freigabe. */
 function mailView(s: Snapshot, order: Order, draft: FilesDraft, companyId: string): Safe {
   const { company, system } = s;
@@ -923,8 +1012,9 @@ function mailView(s: Snapshot, order: Order, draft: FilesDraft, companyId: strin
     ${check?.verdict ? verdictBox(company, check) : null}
     ${results.length ? html`<h4>Anhang</h4>
       <div class="file-tabs">${results.map((file) => html`<button class="toggle ${file.path === path ? 'on' : ''}" data-key="${file.path}" data-action="shell-open" data-path="${file.path}">${file.path.split('/').pop()}</button>`)}
-        ${path && (ext === 'html' || ext === 'htm') ? html`<a class="btn btn-primary btn-small" href="${api.artifactUrl(system.artifactPort, companyId, path)}" target="_blank" rel="noopener">Starten</a>` : null}</div>` : null}
+        ${path && (ext === 'html' || ext === 'htm') ? html`<button class="btn btn-primary btn-small" data-action="browser-open" data-path="${path}">Im Browser öffnen</button>` : null}</div>` : null}
     ${path ? html`<div class="viewer-body mail-preview">${fileContent(companyId, path, draft.filePath === path ? draft.fileDoc : null, system.artifactPort)}</div>` : null}
+    ${order.git ? gitBox(s, order, draft) : null}
     ${order.status === 'review' ? html`<section class="detail" data-key="mail-decide">${reviewControls(s, order)}</section>` : null}
   </div>`;
 }
@@ -961,6 +1051,16 @@ function settingsApp(s: Snapshot, draft: FilesDraft): Safe {
           </form>
         </li>`)}
       </ul>
+    </section>
+    <section data-key="repo"><h3>Repo dieser Firma</h3>
+      ${company.repo ? html`<ul class="order-list"><li class="team-row">
+        <div class="team-head"><strong>${company.repo.remote ?? 'Nur lokal'}</strong><button class="btn btn-small" data-action="repo-disconnect">Trennen</button></div>
+        <small>${company.repo.dir}, Hauptbranch ${company.repo.branch}. ${company.orders.filter((o) => o.git?.commit && !o.git.pushedAt).length} Branches warten aufs Hochladen.</small>
+      </li></ul>` : html`<form class="panel-form" data-form="repo">
+        <label class="field"><span>Ordner oder Adresse</span><input name="source" required autocomplete="off" spellcheck="false" placeholder="/Pfad/zum/Repo oder https://…" /></label>
+        <div class="btn-row"><button class="btn btn-primary">Verbinden</button></div>
+      </form>`}
+      <p class="hint">Jeder Auftrag bekommt einen eigenen Branch und Arbeitsordner, dein Checkout bleibt unberührt. Agenten bedienen kein Git und bekommen keinen Zugang. Commit, Hochladen und Pull Request führt das Spiel erst nach deiner Entscheidung aus, mit deinen Git-Zugangsdaten auf diesem Mac.</p>
     </section>
     <section data-key="add"><h3>Anbieter verbinden</h3>
       <div class="toggle-row">${CONNECTION_KINDS.map((k) => html`<button type="button" class="toggle ${k.id === kind.id ? 'on' : ''}" data-key="${k.id}" data-action="connection-kind" data-id="${k.id}" aria-pressed="${k.id === kind.id}">${k.label}</button>`)}</div>
@@ -1006,7 +1106,7 @@ function roadmapApp(s: Snapshot, draft: FilesDraft): Safe {
         <tbody>${list.map((r) => html`<tr data-key="${r.id}">
           <td>${r.orderId ? html`<button class="sprint-link" data-action="${r.state === 'Wartet auf deine Abnahme' ? 'mail-open' : 'open-work'}" data-id="${r.orderId}">${r.title}</button>` : r.title}</td>
           <td>${r.ownerId ? nameOf(r.ownerId) : r.wanted ? `Noch niemand, passt zu ${r.wanted}` : 'Noch niemand'}</td>
-          <td>${r.state}</td><td>${r.context}</td><td class="num">${r.costEur === null ? '' : eur(r.costEur)}</td></tr>`)}</tbody></table></section>`;
+          <td>${r.state}${r.prUrl ? html` <a class="sprint-link" href="${r.prUrl}" target="_blank" rel="noopener">Pull Request</a>` : null}</td><td>${r.context}${r.branch ? html`<br /><code>${r.branch}</code>` : null}</td><td class="num">${r.costEur === null ? '' : eur(r.costEur)}</td></tr>`)}</tbody></table></section>`;
     })}
     ${rows.length ? null : html`<p class="hint">Noch keine Aufgaben. Hänge Zettel an die Tafel oder vergib einen Auftrag.</p>`}
   </div>`;
@@ -2197,7 +2297,6 @@ export function roomChips(s: Snapshot, viewFloor = 0, ceoSeated = false): Safe {
       })}
     </div>` : null}
     ${ceoSeated ? html`<button class="btn btn-door btn-primary" data-action="open-files">Laptop${openMessages(s) ? ` · ${openMessages(s)}` : ''}</button>` : null}
-    <button class="btn btn-door" data-action="go-outside">Nach draußen</button>
     <div class="chip-seats">Arbeitsplätze: ${s.seats.used}/${s.seats.total}</div>`;
 }
 

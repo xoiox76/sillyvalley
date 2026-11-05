@@ -118,6 +118,11 @@ Server prüft und ausführt; das Limit rechnet der Server aus den gemeldeten Tok
 sonst trägt der Mensch sie ein. Bewusst nicht dabei: Agenten-CLIs, die über Shell-Befehle arbeiten, denn sie würden die Einzelfreigabe umgehen.
 Ebenfalls noch nicht: Websuche für diese Anbieter und ein Anthropic-API-Schlüssel statt des Abos.
 
+## Zwischenschritt: Repo im Spiel (fertig)
+
+Branch und Arbeitsordner je Auftrag, Diff in der Post, Commit nach Abnahme, Hochladen und Pull Request nach Klick. Das ist der erste Konnektor mit Außenwirkung:
+Der Mensch löst jede Aktion einzeln aus. Bewusst nicht dabei: automatisches Zusammenführen, Status der Pull Requests im Spiel, und Tests, die der Agent selbst startet.
+
 ## Meilenstein 5: Außenwirkungen
 
 Agenten dürfen vorbereiten, Menschen entscheiden. Konnektoren (Mail, Veröffentlichung, Zahlungen) kommen einzeln dazu,

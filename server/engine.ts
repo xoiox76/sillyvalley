@@ -2,6 +2,7 @@
 // mit einer klaren Begründung abgewiesen oder als echter Agenten-Lauf ausgeführt.
 
 import { execFileSync } from 'node:child_process';
+import * as git from './git.ts';
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -12,6 +13,7 @@ import { checkDepartment, checkPlacement, deskDepartment } from '../shared/layou
 import { EXTEND_COST, SHAFT_COST, buildLimits, buildingAt, checkShaft, floorCost, floorOf, isShaft, itemsOnFloor, roomAt, roomOf, shaftLanding } from '../shared/building.ts';
 import { HOME_ROOMS, parcelById, parcelOfLocation, startTown } from '../shared/town.ts';
 import type {
+  CompanyRepo, OrderGit,
   Sprint,
   Agent, AgentLive, AgentOrigin, BoardItem, Building, CommandRequest, HelpRequest, Shaft, Company, CompanyRole, CompanySummary, Contract, Criterion, CustomSkill, Department, FurnitureKind, Job, Fx, LiveKind, Look, LocationId, Mandate, Meeting, Money,
   Order, PlacedItem, PlanStatus, Pool, ProjectAgent, Proposal, ProviderInfo, Rotation, Run, RunKind, Snapshot, Stage, StageKind, SystemInfo, Team, Verdict,
@@ -26,7 +28,7 @@ import {
 import type { Provider, ProviderEvent, RunHandle } from './providers/types.ts';
 import { parseCommandRequest, parseHandover, parseHelp, parseNotes, runCommand, type CommandHandle, type CommandResult } from './commands.ts';
 import { listSubagents } from './subagents.ts';
-import { changedFiles, ensureWorkspace, listAll, listFiles, resolveIn, slugify, snapshotFiles, type FileSnapshot, type Roots } from './workspace.ts';
+import { BRANCHES_DIR, READ_DIR, changedFiles, ensureWorkspace, listAll, listFiles, resolveIn, slugify, snapshotFiles, type FileSnapshot, type Roots } from './workspace.ts';
 import os from 'node:os';
 
 export class GameError extends Error {
@@ -479,6 +481,7 @@ export class Engine {
     if (!location || location.moveCost !== null) throw new GameError('Gründe im Kinderzimmer oder in der Garage.');
     if (!(input.budgetEur > 0)) throw new GameError('Das KI-Budget muss größer als 0 € sein.');
     const projectDir = this.checkProjectDir(input.projectDir);
+    const repoDir = projectDir && git.isRepoRoot(projectDir) ? projectDir : null;
 
     const id = `${slugify(name)}-${shortId()}`;
     const company: Company = {
@@ -493,6 +496,15 @@ export class Engine {
     fs.writeFileSync(path.join(workspace, 'wissen', 'idee.md'), `# ${name}\n\n${idea}\n${projectDir ? `\nDie Firma arbeitet an dem bestehenden Projekt unter ${projectDir}.\n` : ''}`);
     this.companies.set(id, company);
     this.persistNow(company);
+    // Ein Git-Repo wird gleich als solches verbunden. So arbeitet von Anfang an jeder Auftrag auf einem eigenen Branch.
+    if (repoDir) {
+      try {
+        company.repo = { dir: repoDir, remote: git.remoteUrl(repoDir), branch: git.defaultBranch(repoDir), connectedAt: Date.now() };
+        this.syncRead(company);
+      } catch {
+        company.repo = null;
+      }
+    }
     return company;
   }
 
@@ -994,6 +1006,7 @@ export class Engine {
       webAccess: Boolean(input.webAccess), status: 'running', createdAt: Date.now(), decidedAt: null, runIds: [],
       resultDir: `ergebnisse/${slugify(title)}-${id.slice(1, 5)}`, files: [], summary: '', savedFromText: false, feedback: [],
     };
+    if (company.repo) order.git = this.openBranch(company, id, title);
     const workspace = this.workspaceOf(company.id);
     fs.mkdirSync(path.join(workspace, order.resultDir), { recursive: true });
     fs.writeFileSync(path.join(workspace, 'auftraege', `${path.basename(order.resultDir)}.md`), this.orderBrief(company, order));
@@ -1009,7 +1022,7 @@ export class Engine {
     return {
       hasDecisions: fs.existsSync(path.join(this.workspaceOf(company.id), DECISIONS_FILE)),
       department: company.departments.find((d) => d.id === order.departmentId) ?? null,
-      projectDir: company.projectDir ?? null,
+      projectDir: order.git?.dir ?? (company.repo ? READ_DIR : company.projectDir ?? null),
     };
   }
 
@@ -1198,6 +1211,7 @@ export class Engine {
     }
     order.criteria.forEach((c, index) => (c.checked = Boolean(input.checked?.[index])));
     order.decidedAt = Date.now();
+    this.settleBranch(company, order, input.decision === 'accept');
     this.setIdleOrPending(company, agent, input.decision === 'accept' ? 'done' : undefined);
     if (input.decision === 'accept') {
       setTimeout(() => {
@@ -1274,6 +1288,148 @@ export class Engine {
     this.refreshParticipants(company, meeting);
     await this.pump(company);
     return meeting;
+  }
+
+  /* ---------- Repo ---------- */
+
+  /** Mit Repo sehen Agenten den Checkout des Menschen nicht. Sie arbeiten in Arbeitsordnern unter zweige/. */
+  private agentRoots(company: Company): Roots {
+    const roots = this.rootsOf(company.id);
+    return company.repo ? { ...roots, projectDir: null } : roots;
+  }
+
+  private syncRead(company: Company): void {
+    const repo = company.repo!;
+    // Solange jemand darin liest, bleibt der Ordner stehen.
+    if (company.runs.some((r) => r.status === 'running' && !r.orderId)) return;
+    git.syncReadWorktree(repo.dir, path.join(this.workspaceOf(company.id), READ_DIR), git.baseOf(repo.dir, repo.branch));
+  }
+
+  /** Was ein Lauf im Branch geändert hat, als Dateien des Auftrags. */
+  private branchFiles(company: Company, run: Run): string[] {
+    const order = company.orders.find((o) => o.id === run.orderId);
+    if (!order?.git || !company.repo || run.stageKind === 'check') return [];
+    try {
+      const worktree = path.join(this.workspaceOf(company.id), order.git.dir);
+      git.assertIntact(company.repo.dir, worktree);
+      return git.changedPaths(worktree).map((file) => `${order.git!.dir}/${file}`);
+    } catch (err) {
+      this.notify(company, 'error', `"${order.title}": ${(err as Error).message}`);
+      return [];
+    }
+  }
+
+  /** Verbindet ein Repo: einen vorhandenen Ordner oder eine Adresse, die geklont wird. Der Checkout bleibt, wie er ist. */
+  async connectRepo(companyId: string, input: { source?: string }): Promise<void> {
+    const company = this.require(companyId);
+    const source = input.source?.trim();
+    if (!source) throw new GameError('Gib einen Ordner oder eine Git-Adresse an.');
+    if (company.orders.some((o) => o.status === 'running')) throw new GameError('Warte, bis laufende Aufträge fertig sind.');
+    let dir: string;
+    if (git.isCloneUrl(source)) {
+      dir = path.join(this.dataDir, 'companies', company.id, 'repo');
+      if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true, force: true });
+      await git.clone(source, dir).catch((err) => {
+        throw new GameError(`Klonen fehlgeschlagen: ${(err as Error).message}`);
+      });
+    } else {
+      if (!path.isAbsolute(source)) throw new GameError('Gib den vollständigen Pfad an oder eine Adresse mit https:// oder git@.');
+      dir = this.checkProjectDir(source)!;
+      if (!git.isRepoRoot(dir)) throw new GameError('Dieser Ordner ist kein Git-Repo. Gib seinen obersten Ordner an.');
+    }
+    const branch = git.defaultBranch(dir);
+    git.baseOf(dir, branch);
+    company.projectDir = dir;
+    company.repo = { dir, remote: git.remoteUrl(dir), branch, connectedAt: Date.now() };
+    this.syncRead(company);
+    this.touch(company);
+  }
+
+  disconnectRepo(companyId: string): void {
+    const company = this.require(companyId);
+    if (company.orders.some((o) => o.git && !o.git.pushedAt && !['accepted', 'rejected'].includes(o.status))) throw new GameError('Entscheide zuerst über die offenen Aufträge im Repo.');
+    if (company.repo) {
+      try {
+        git.removeWorktree(company.repo.dir, path.join(this.workspaceOf(company.id), READ_DIR));
+      } catch {
+        // Der Ordner zum Lesen ist nur eine Kopie.
+      }
+    }
+    company.repo = null;
+    this.touch(company);
+  }
+
+  /** Jeder Auftrag beginnt auf einem eigenen Branch vom neuesten bekannten Stand. */
+  private openBranch(company: Company, id: string, title: string): OrderGit {
+    const repo = company.repo!;
+    const slug = `${slugify(title)}-${id.slice(1, 5)}`;
+    const dir = `${BRANCHES_DIR}/${slug}`;
+    const base = git.baseOf(repo.dir, repo.branch);
+    const branch = `auftrag/${slug}`;
+    git.addWorktree(repo.dir, path.join(this.workspaceOf(company.id), dir), branch, base);
+    // Für den nächsten Auftrag. Dieser arbeitet schon, ohne auf das Netz zu warten.
+    if (repo.remote) void git.fetchQuietly(repo.dir);
+    return { branch, dir, base, commit: null, pushedAt: null, prUrl: null };
+  }
+
+  /** Abgenommen heisst committet, lokal. Abgelehnt heisst weg, es ging ja nie etwas hinaus. */
+  private settleBranch(company: Company, order: Order, accepted: boolean): void {
+    if (!order.git || !company.repo) return;
+    const worktree = path.join(this.workspaceOf(company.id), order.git.dir);
+    try {
+      git.assertIntact(company.repo.dir, worktree);
+      if (accepted) order.git.commit = git.commitAll(worktree, `${order.title}\n\n${order.notes}`.trim(), this.agentOf(company, order.stages.find((s) => s.kind === 'work')?.agentId ?? order.agentId).name);
+      if (!accepted || !order.git.commit) {
+        git.removeWorktree(company.repo.dir, worktree);
+        git.deleteBranch(company.repo.dir, order.git.branch);
+      }
+    } catch (err) {
+      this.notify(company, 'error', `"${order.title}": ${(err as Error).message}`);
+    }
+  }
+
+  orderDiff(companyId: string, orderId: string): string {
+    const company = this.require(companyId);
+    const order = this.orderOf(company, orderId);
+    if (!order.git || !company.repo) throw new GameError('Dieser Auftrag hat keinen Branch.');
+    const worktree = path.join(this.workspaceOf(company.id), order.git.dir);
+    if (!fs.existsSync(worktree)) throw new GameError('Der Arbeitsordner dieses Auftrags ist weg.');
+    git.assertIntact(company.repo.dir, worktree);
+    return git.diffOf(worktree, order.git.base);
+  }
+
+  private pushable(company: Company, orderId: string): { order: Order; orderGit: OrderGit; repo: CompanyRepo } {
+    const order = this.orderOf(company, orderId);
+    const repo = company.repo;
+    if (!order.git || !repo) throw new GameError('Dieser Auftrag hat keinen Branch.');
+    if (order.status !== 'accepted') throw new GameError('Nimm den Auftrag zuerst ab.');
+    if (!order.git.commit) throw new GameError('Dieser Auftrag hat nichts im Repo geändert.');
+    if (!repo.remote) throw new GameError('Dieses Repo hat kein Ziel zum Hochladen (origin).');
+    return { order, orderGit: order.git, repo };
+  }
+
+  /** Nach aussen geht nur, was der Mensch ausdrücklich anstösst. Nie mit force. */
+  async pushOrder(companyId: string, orderId: string): Promise<void> {
+    const company = this.require(companyId);
+    const { order, orderGit, repo } = this.pushable(company, orderId);
+    await git.pushBranch(repo.dir, orderGit.branch).catch((err) => {
+      throw new GameError(`Hochladen fehlgeschlagen: ${(err as Error).message}`);
+    });
+    orderGit.pushedAt = Date.now();
+    this.notify(company, 'info', `"${order.title}" liegt auf ${orderGit.branch}.`);
+    this.touch(company);
+  }
+
+  async openOrderPr(companyId: string, orderId: string): Promise<void> {
+    const company = this.require(companyId);
+    const { order, orderGit, repo } = this.pushable(company, orderId);
+    if (orderGit.prUrl) throw new GameError('Dafür gibt es schon einen Pull Request.');
+    if (!orderGit.pushedAt) await this.pushOrder(companyId, orderId);
+    const body = [order.notes, order.criteria.length ? `## Abnahme\n${order.criteria.map((c) => `- [${c.checked ? 'x' : ' '}] ${c.text}`).join('\n')}` : ''].filter(Boolean).join('\n\n');
+    orderGit.prUrl = await git.openPullRequest(repo.dir, orderGit.branch, repo.branch, order.title.slice(0, 200), body).catch((err) => {
+      throw new GameError(`Pull Request fehlgeschlagen: ${(err as Error).message}`);
+    });
+    this.touch(company);
   }
 
   private meetingOf(company: Company, id: string): Meeting {
@@ -1886,7 +2042,9 @@ export class Engine {
       await this.resumeAfterCommand(company, request);
       return;
     }
-    const cwd = company.projectDir;
+    // Mit Repo laufen Befehle im Branch des Auftrags, nie im Checkout des Menschen.
+    const requestOrder = company.orders.find((o) => o.id === request.orderId);
+    const cwd = company.repo ? path.join(this.workspaceOf(company.id), requestOrder?.git?.dir ?? READ_DIR) : company.projectDir;
     if (!cwd || !fs.existsSync(cwd)) throw new GameError('Der Projektordner ist nicht mehr da.');
     if (this.busy(company, agent.id)) throw new GameError(`${agent.name} arbeitet gerade. Warte, bis der Lauf fertig ist.`);
     request.status = 'running';
@@ -2570,6 +2728,7 @@ export class Engine {
     if (company.projectDir && !fs.existsSync(company.projectDir)) {
       throw new GameError(`Der Projektordner ${company.projectDir} ist nicht mehr da. Ohne ihn startet kein Lauf.`);
     }
+    if (company.repo && !spec.orderId) this.syncRead(company);
     this.starting.add(agent.id);
     let fx: Fx;
     try {
@@ -2599,7 +2758,7 @@ export class Engine {
     if (spec.orderId) this.orderOf(company, spec.orderId).runIds.push(run.id);
     this.setLive(agent, 'starting', spec.kind === 'interview' ? 'kommt zum Vorstellungsgespräch' : 'nimmt die Arbeit auf', run.id);
 
-    const roots = this.rootsOf(company.id);
+    const roots = this.agentRoots(company);
     const before = snapshotFiles(roots);
     const handle = this.provider.start(
       {
@@ -2666,7 +2825,17 @@ export class Engine {
   }
 
   private orderFiles(company: Company, order: Order): string[] {
-    return listFiles(this.workspaceOf(company.id), order.resultDir).map((f) => f.path);
+    const own = listFiles(this.workspaceOf(company.id), order.resultDir).map((f) => f.path);
+    if (!order.git || !company.repo) return own;
+    const worktree = path.join(this.workspaceOf(company.id), order.git.dir);
+    if (!fs.existsSync(worktree)) return own;
+    try {
+      // Auch hier erst prüfen: Eine veränderte .git könnte Git auf ein anderes Repo lenken.
+      git.assertIntact(company.repo.dir, worktree);
+      return [...own, ...git.changedPaths(worktree).map((file) => `${order.git!.dir}/${file}`)];
+    } catch {
+      return own;
+    }
   }
 
   private finish(company: Company, agent: Agent, run: Run, before: FileSnapshot, end: Extract<ProviderEvent, { type: 'end' }>): void {
@@ -2675,7 +2844,7 @@ export class Engine {
       status: end.status, endedAt: Date.now(), usage: end.usage, costUsd: end.costUsd, costSource: end.costSource,
       costEur: end.costUsd * run.fx.eurPerUsd, modelUsed: end.modelUsed ?? run.model, durationMs: end.durationMs,
       turns: end.turns, denied: Math.max(run.denied, end.denied), error: end.error, text: end.text.slice(-MAX_TEXT),
-      files: changedFiles(this.rootsOf(company.id), before),
+      files: [...changedFiles(this.agentRoots(company), before), ...this.branchFiles(company, run)],
     });
     this.appendLedger(company, run);
     if (end.sessionCostUsd !== null) agent.sessionCostUsd = end.sessionCostUsd;
@@ -2750,7 +2919,7 @@ export class Engine {
 
   private applyStageResult(company: Company, order: Order, agent: Agent, run: Run, structured: unknown): void {
     const stage = order.stages[order.stageIndex];
-    const inResult = run.files.filter((f) => f.startsWith(`${order.resultDir}/`));
+    const inResult = run.files.filter((f) => f.startsWith(`${order.resultDir}/`) || (order.git && f.startsWith(`${order.git.dir}/`)));
     stage.files = [...new Set([...stage.files, ...inResult])];
     order.files = this.orderFiles(company, order);
 

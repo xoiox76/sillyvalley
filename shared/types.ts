@@ -360,7 +360,27 @@ export interface Criterion {
   checked: boolean;
 }
 
+/** Der Branch eines Auftrags. Der Arbeitsordner liegt im Arbeitsbereich unter zweige/. */
+export interface OrderGit {
+  branch: string;
+  dir: string;
+  base: string;
+  /** Gesetzt, sobald der Mensch abgenommen hat und committet wurde. */
+  commit: string | null;
+  pushedAt: number | null;
+  prUrl: string | null;
+}
+
+/** Das Repo, an dem die Firma arbeitet. */
+export interface CompanyRepo {
+  dir: string;
+  remote: string | null;
+  branch: string;
+  connectedAt: number;
+}
+
 export interface Order {
+  git?: OrderGit | null;
   /** Gesetzt, wenn der Auftrag aus einem Sprint stammt. */
   sprintId?: string | null;
   /** Wer den Auftrag schon weitergegeben hat. Niemand bekommt ihn zurück, und er wandert nur begrenzt oft. */
@@ -607,6 +627,7 @@ export interface TownState {
 }
 
 export interface Company {
+  repo?: CompanyRepo | null;
   sprints: Sprint[];
   id: string;
   name: string;

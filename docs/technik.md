@@ -6,6 +6,10 @@ Büro passiert, ist kein Theater: Jede Figur zeigt den Zustand eines echten Proz
 echte Datei, jeder Euro beruht auf gemessenem Verbrauch.
 
 
+## Git-Repo verbinden
+
+Eine Firma lässt sich unter Laptop › Einstellungen mit einem Repo verbinden, über einen vorhandenen Ordner oder eine Adresse. Beim Gründen wird ein Git-Ordner automatisch verbunden. Jeder Auftrag bekommt dann einen eigenen Branch `auftrag/…` und einen Arbeitsordner unter `zweige/` im Arbeitsbereich; der Checkout bleibt unberührt. Agenten bekommen kein Git und keinen Zugang. Abnehmen committet lokal unter dem Namen des Agenten, Ablehnen löscht den Branch. Hochladen und Pull Request löst nur der Mensch aus, nie mit force. Hooks sind dabei abgeschaltet, und eine veränderte Datei `.git` im Arbeitsordner sperrt Git für diesen Auftrag. Der Pull Request braucht die GitHub-CLI `gh`.
+
 ## Als Mac-App starten
 
 `desktop/build.sh` baut `Silly Vailley.app` auf den Schreibtisch: ein eigenes Fenster, das den lokalen Server startet und beim Beenden wieder stoppt. Läuft schon ein Server, etwa aus dem Terminal, nutzt die App ihn und lässt ihn laufen. Die App merkt sich Projektordner und die Pfade zu `node` und `claude`. Ändern sie sich, baue sie neu. Das Protokoll steht in `~/Library/Logs/Silly Vailley.log`.
@@ -191,6 +195,29 @@ Wer einen Auftrag bekommt, prüft ihn zuerst. Passt er offensichtlich nicht und 
 
 Neue Mitarbeiter gehen nach dem Vorstellungsgespräch zu jedem Kollegen und erfahren, was er kann, und umgekehrt. Das kommt aus Stelle und Fähigkeiten und kostet keinen Lauf. Danach steht es in ihren Anweisungen, und nur wen jemand kennt, kann er fragen oder ihm etwas weitergeben. Kommt vorher Arbeit, endet die Runde, das Wissen bleibt.
 
+## Das Büro in der Stadt
+
+Hinaus geht es per Klick auf die Tür: Die Figur läuft hin und steht dann in der Stadt. Rund ums Büro liegt die echte Stadt, ausgerichtet auf das Grundstück der Firma, mit den Häusern und Bäumen, die dort stehen.
+
+## Tastenkürzel
+
+Dieselbe Liste steht im Spiel auf dem Laptop unter **Tastenkürzel**.
+
+| Wo | Taste | Wirkung |
+|---|---|---|
+| Büro, Stadt | Pfeiltasten, `W A S D` | laufen |
+| Büro, Stadt | `+`, `-`, Mausrad | zoomen |
+| Büro, Stadt | `0` | Ansicht zurücksetzen |
+| Büro | `Bild auf`, `Bild ab` | Etage wechseln |
+| Büro | `Enter` | am Chefplatz sitzend den Laptop öffnen |
+| Bau-Modus | Klick, `Enter` | abstellen |
+| Bau-Modus | `R`, Rechtsklick | drehen |
+| Bau-Modus | `I` | ins Inventar |
+| Bau-Modus | `Entf`, Rücktaste | löschen, ein zweiter Druck bestätigt |
+| Überall | `Esc` | abbrechen, Fenster schliessen; im Browser des Laptops zurück |
+| Mac-App | `Cmd+R`, `Cmd+F`, `Cmd+M`, `Cmd+H` | neu laden, Vollbild, ins Dock, ausblenden |
+| Mac-App | `Cmd+W`, `Cmd+Q` | beenden |
+
 ## Gegenstände umstellen
 
 Alles im Raum lässt sich verschieben, auch was beim Einzug schon dastand. Im Bereich Bauen wählt man einen Gegenstand per
@@ -211,7 +238,7 @@ Folgen: Beim Schreibtisch sitzt die Figur anders, beim Besprechungsraum wandert 
 
 ## Du im Spiel
 
-Du läufst als Geschäftsführung selbst durch Büro und Stadt, per Klick oder mit Pfeiltasten und WASD. Klickst du jemanden an, gehst du hin. Name und Aussehen stellst du im Team-Tab ein. Unter Bauen gibt es einmal kostenlos den Chefschreibtisch mit Pineapple-Laptop. Ein Klick darauf, und du setzt dich hin. Sitzt du dort, öffnet ein weiterer Klick auf den Laptop, `Enter` oder der Knopf links PineappleOS. **Nachrichten** sammelt, was auf dich wartet: Befehle, Verträge, Freigaben, Abnahmen und Bewerbungen aus dem Projektordner. **Einstellungen** auf dem Laptop verbinden weitere Anbieter über ihre API: OpenAI, Google Gemini, Mistral, OpenRouter, Ollama, LM Studio oder einen eigenen OpenAI-kompatiblen Endpunkt. Agenten dieser Anbieter bekommen nur Dateiwerkzeuge im Arbeitsbereich, die der Server selbst ausführt (`server/providers/compatible.ts`). Schlüssel liegen in `data/verbindungen.json`, nur für den Benutzer lesbar. Der Laptop läuft unter PineappleOS: Schreibtisch mit Programmen, Dock, Fenster. **Post** ist dein Postfach: Fertige Arbeit kommt dort als Mail an, mit Anhang zum Prüfen und der Freigabe. **Roadmap** zeigt alle Aufgaben nach Jetzt, Als Nächstes, Später und Erledigt, mit Verantwortlichen und Kosten. **Dateien** ist der Dateimanager, dort lässt sich eine HTML-Datei auch starten. **Sprint** erscheint, sobald ein Scrum Master eingestellt ist: Planning als echter Lauf, deine Entscheidung, Board aus dem echten Stand, Retrospektive als echte Besprechung. **Rollen** ist ein Markdown-Programm (mit Zettelfarbe je Rolle; ohne Angabe gilt eine Voreinstellung): Du schreibst eine Rolle aus der Vorlage oder lädst eine MD-Datei, das Spiel liest Name, Vorlage, Modell, Aufgabe, Anforderungen und Fähigkeiten daraus. **Akten** zeigt je Person Kosten, Ergebnisse, mitgebrachte und dazugelernte Fähigkeiten und die Teamzuordnung. Die Figur ist nur dein Bild: Sie belegt keinen Platz, kostet nichts und ändert nichts daran, was die Agenten dürfen.
+Du läufst als Geschäftsführung selbst durch Büro und Stadt, per Klick oder mit Pfeiltasten und WASD. Klickst du jemanden an, gehst du hin. Name und Aussehen stellst du im Team-Tab ein. Unter Bauen gibt es einmal kostenlos den Chefschreibtisch mit Pineapple-Laptop. Ein Klick darauf, und du setzt dich hin. Sitzt du dort, öffnet ein weiterer Klick auf den Laptop, `Enter` oder der Knopf links PineappleOS. **Nachrichten** sammelt, was auf dich wartet: Befehle, Verträge, Freigaben, Abnahmen und Bewerbungen aus dem Projektordner. **Einstellungen** auf dem Laptop verbinden weitere Anbieter über ihre API: OpenAI, Google Gemini, Mistral, OpenRouter, Ollama, LM Studio oder einen eigenen OpenAI-kompatiblen Endpunkt. Agenten dieser Anbieter bekommen nur Dateiwerkzeuge im Arbeitsbereich, die der Server selbst ausführt (`server/providers/compatible.ts`). Schlüssel liegen in `data/verbindungen.json`, nur für den Benutzer lesbar. Der Laptop läuft unter PineappleOS: Schreibtisch mit Programmen, Dock, Fenster. Der **Browser** zeigt Ergebnisse abgeschirmt direkt auf dem Laptop, auch aus der Post und aus Dateien. **Post** ist dein Postfach: Fertige Arbeit kommt dort als Mail an, mit Anhang zum Prüfen und der Freigabe. **Roadmap** zeigt alle Aufgaben nach Jetzt, Als Nächstes, Später und Erledigt, mit Verantwortlichen und Kosten. **Dateien** ist der Dateimanager, dort lässt sich eine HTML-Datei auch starten. **Sprint** erscheint, sobald ein Scrum Master eingestellt ist: Planning als echter Lauf, deine Entscheidung, Board aus dem echten Stand, Retrospektive als echte Besprechung. **Rollen** ist ein Markdown-Programm (mit Zettelfarbe je Rolle; ohne Angabe gilt eine Voreinstellung): Du schreibst eine Rolle aus der Vorlage oder lädst eine MD-Datei, das Spiel liest Name, Vorlage, Modell, Aufgabe, Anforderungen und Fähigkeiten daraus. **Akten** zeigt je Person Kosten, Ergebnisse, mitgebrachte und dazugelernte Fähigkeiten und die Teamzuordnung. Die Figur ist nur dein Bild: Sie belegt keinen Platz, kostet nichts und ändert nichts daran, was die Agenten dürfen.
 
 ## Ansicht
 

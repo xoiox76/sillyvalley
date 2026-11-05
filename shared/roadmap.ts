@@ -26,6 +26,8 @@ export interface RoadmapRow {
   costEur: number | null;
   /** Der Auftrag dahinter, falls es einen gibt. */
   orderId: string | null;
+  branch?: string | null;
+  prUrl?: string | null;
 }
 
 const ORDER_STATE: Record<Company['orders'][number]['status'], string> = {
@@ -48,7 +50,7 @@ export function roadmapRows(company: Pick<Company, 'orders' | 'runs' | 'mandates
     rows.push({
       id: order.id, title: order.title, phase: done ? 'erledigt' : 'jetzt', state: ORDER_STATE[order.status],
       ownerId: order.stages.find((stage) => stage.kind === 'work')?.agentId ?? order.agentId, wanted: '',
-      context: sprintName(order.sprintId) ?? mandateName(order.mandateId) ?? 'Einzelauftrag', costEur: cost((r) => r.orderId === order.id), orderId: order.id,
+      context: sprintName(order.sprintId) ?? mandateName(order.mandateId) ?? 'Einzelauftrag', costEur: cost((r) => r.orderId === order.id), orderId: order.id, branch: order.git?.commit || !done ? order.git?.branch ?? null : null, prUrl: order.git?.prUrl ?? null,
     });
   }
   for (const mandate of company.mandates) {

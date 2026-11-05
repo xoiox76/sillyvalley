@@ -59,6 +59,7 @@ export class Workspace {
   private inside(rel: string): string {
     if (typeof rel !== 'string') throw new Denied('Pfad fehlt.');
     const target = path.resolve(this.cwd, rel);
+    if (target.split(path.sep).includes('.git')) throw new Denied('Git bedient nur die Firmenleitung.');
     let existing = target;
     while (!fs.existsSync(existing) && path.dirname(existing) !== existing) existing = path.dirname(existing);
     const real = path.join(fs.realpathSync(existing), path.relative(existing, target));

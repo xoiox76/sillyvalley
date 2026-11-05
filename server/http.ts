@@ -1,3 +1,4 @@
+import { GitError } from './git.ts';
 import { SettingsError } from './settings.ts';
 // HTTP-API. Nur lokal erreichbar und gegen fremde Seiten abgesichert: Ein von einem Agenten
 // erzeugter Prototyp läuft im selben Browser, darf aber keine bezahlten Läufe auslösen.
@@ -135,9 +136,10 @@ export function createApi(engine: Engine) {
       if (!isAllowedRequest(req)) throw new GameError('Nur lokale Anfragen sind erlaubt.', 403);
       await route(engine, req, res, url);
     } catch (err) {
-      const known = err instanceof GameError;
+      const known = err instanceof GameError || err instanceof GitError;
+      const status = err instanceof GameError ? err.status : 400;
       if (!known) console.error(err);
-      if (!res.headersSent) sendJson(res, known ? err.status : 500, { error: known ? err.message : 'Interner Fehler. Details stehen im Server-Log.' });
+      if (!res.headersSent) sendJson(res, known ? status : 500, { error: known ? err.message : 'Interner Fehler. Details stehen im Server-Log.' });
       else res.end();
     }
     return true;
@@ -223,7 +225,26 @@ async function route(engine: Engine, req: IncomingMessage, res: ServerResponse, 
     }
   }
 
+  if (section === 'repo') {
+    if (parts.length === 3 && method === 'POST') {
+      await engine.connectRepo(id, await readJson(req));
+      return sendJson(res, 200, {});
+    }
+    if (parts.length === 3 && method === 'DELETE') {
+      engine.disconnectRepo(id);
+      return sendJson(res, 200, {});
+    }
+  }
   if (section === 'orders') {
+    if (parts.length === 5 && parts[4] === 'diff' && method === 'GET') return sendJson(res, 200, { diff: engine.orderDiff(id, parts[3]) });
+    if (parts.length === 5 && parts[4] === 'push' && method === 'POST') {
+      await engine.pushOrder(id, parts[3]);
+      return sendJson(res, 200, {});
+    }
+    if (parts.length === 5 && parts[4] === 'pr' && method === 'POST') {
+      await engine.openOrderPr(id, parts[3]);
+      return sendJson(res, 200, {});
+    }
     if (parts.length === 3 && method === 'POST') return sendJson(res, 201, await engine.startOrder(id, await readJson(req)));
     if (parts.length === 5 && parts[4] === 'stop' && method === 'POST') {
       await readJson(req);

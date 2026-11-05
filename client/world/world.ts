@@ -4,6 +4,7 @@
 import { DEFAULT_CEO, LOCATIONS, isProp, locationById, staffOf } from '../../shared/catalog.ts';
 import { withoutEszett } from '../ui/html.ts';
 import { noteEdge, noteLook } from '../../shared/board.ts';
+import { townBackdrop } from './town.ts';
 import { buildingAt, checkShaft, floorOf, isShaft, itemsOnFloor, roomOf, shaftLanding } from '../../shared/building.ts';
 import { noteTaker, wallNotes, type BoardNote } from '../../shared/board.ts';
 import {
@@ -150,6 +151,8 @@ export interface WorldCallbacks {
   onMeetingClick(meetingId: string): void;
   onDepartmentClick(departmentId: string): void;
   onBoardClick(): void;
+  /** Du hast die Tür erreicht. */
+  onDoor(): void;
   /** Tastatur gehört gerade einem Fenster oder Eingabefeld. */
   keyboardBlocked(): boolean;
   /** Du sitzt am Chefplatz oder bist aufgestanden. */
@@ -201,6 +204,7 @@ export class World {
   private viewFloor = 0;
   /** Du selbst. Die Figur steht immer auf der Etage, die du gerade siehst. */
   private ceo = { i: 0, j: 0, path: [] as Tile[], view: 'front' as View, flip: false, walking: false, key: null as Tile | null, placed: false, sitAt: null as string | null, seated: false };
+  private ceoLeaving = false;
   private ceoLabel: HTMLDivElement | null = null;
   private ceoSeatedShown = false;
   /** Die Etage, für die gerade gerechnet wird: die sichtbare oder die der Figur, die gerade dran ist. */
@@ -337,6 +341,7 @@ export class World {
     this.ceo.key = null;
     this.ceo.sitAt = null;
     this.ceo.seated = false;
+    this.ceoLeaving = false;
     this.ceo.path = findPath(this.location(), this.blocked, this.ceoTile(), target, this.edges);
   }
 
@@ -360,6 +365,11 @@ export class World {
         ceo.path.shift();
         left -= dist;
         if (!ceo.path.length && ceo.key) this.ceoStep();
+        if (!ceo.path.length && this.ceoLeaving) {
+          this.ceoLeaving = false;
+          this.callbacks.onDoor();
+          return;
+        }
       } else {
         ceo.i += (dx / dist) * left;
         ceo.j += (dy / dist) * left;
@@ -678,6 +688,18 @@ export class World {
     return up >= b.v && up < b.v + b.h;
   }
 
+  /** Die Türen hängen an der Wand, deshalb zählt hier die Stelle im Bild, nicht das Feld. */
+  private doorAt(x: number, y: number): boolean {
+    if (!this.room || this.viewFloor > 0) return false;
+    const [ox, oy] = this.room.pen.pt(0, 0);
+    return this.room.doors.some((door) => {
+      const u = door.face === 'J' ? x - this.offX - ox : this.offX + ox - x;
+      if (u < door.u || u >= door.u + door.w) return false;
+      const up = oy + this.offY + Math.floor(u / 2) - y;
+      return up >= 0 && up < door.h;
+    });
+  }
+
   private itemAt(x: number, y: number): PlacedItem | null {
     // Von unten nach oben abgesucht: Was auf dem Bildschirm tiefer steht, steht weiter vorn und verdeckt den Rest.
     for (let z = 0; z <= 42; z += 4) {
@@ -748,7 +770,7 @@ export class World {
     }
     const { x, y } = this.low(e);
     this.callbacks.onTileHover(this.tileAt(x, y));
-    this.canvas.style.cursor = this.ghost ? 'crosshair' : this.actorAt(x, y) || this.laptopAt(x, y) ? 'pointer' : 'default';
+    this.canvas.style.cursor = this.ghost ? 'crosshair' : this.actorAt(x, y) || this.laptopAt(x, y) || this.doorAt(x, y) ? 'pointer' : 'default';
   }
 
   private onClick(e: MouseEvent): void {
@@ -777,6 +799,17 @@ export class World {
     }
     if (this.boardAt(x, y)) {
       this.callbacks.onBoardClick();
+      return;
+    }
+    if (this.doorAt(x, y)) {
+      // Erst hingehen, dann hinaus. Eine Figur mit zugestelltem Weg steht nicht fest: Die Tür gilt trotzdem.
+      const loc = this.location();
+      this.walkCeo(loc.door);
+      this.ceoLeaving = true;
+      if (!this.ceo.path.length) {
+        this.ceoLeaving = false;
+        this.callbacks.onDoor();
+      }
       return;
     }
     const item = this.itemAt(x, y);
@@ -1300,6 +1333,7 @@ export class World {
     for (let y = -128; y < this.lowH + 128; y += 128) {
       for (let x = -128; x < this.lowW + 128; x += 128) ctx.drawImage(this.water.canvas, x + shift, y);
     }
+    this.drawSurroundings(ctx, pen);
     ctx.drawImage(room.base.canvas, this.offX, this.offY);
     for (const department of company.departments.filter((d) => floorOf(d) === this.viewFloor)) this.drawZone(ctx, pen, department, department.color, 0.22, false, department);
     for (const [id, el] of this.zoneLabels) {
@@ -1568,6 +1602,26 @@ export class World {
     line(ctx, sx, sy - 4, sx + 9, sy, '#5eeac0');
     line(ctx, sx + 9, sy, sx, sy + 4, '#5eeac0');
     line(ctx, sx, sy + 4, sx - 9, sy, '#5eeac0');
+  }
+
+  /** Rund ums Büro liegt die echte Stadt, ausgerichtet auf das eigene Grundstück. Sie ist abgedunkelt, damit das Büro vorn bleibt. */
+  private drawSurroundings(ctx: Ctx, pen: Pen): void {
+    const loc = this.location();
+    const backdrop = townBackdrop(this.company!, loc.w, loc.d);
+    if (!backdrop) return;
+    const { image, zoom } = backdrop;
+    const [cx, cy] = pen.pt(loc.w / 2, loc.d / 2);
+    const left = cx - backdrop.x * zoom;
+    const top = cy - backdrop.y * zoom;
+    // Nur der sichtbare Teil: Die ganze Stadt in jedem Bild zu vergrössern, wäre zu teuer.
+    const sx = Math.max(0, Math.floor(-left / zoom));
+    const sy = Math.max(0, Math.floor(-top / zoom));
+    const sw = Math.min(image.canvas.width - sx, Math.ceil(this.lowW / zoom) + 2);
+    const sh = Math.min(image.canvas.height - sy, Math.ceil(this.lowH / zoom) + 2);
+    if (sw <= 0 || sh <= 0) return;
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(image.canvas, sx, sy, sw, sh, left + sx * zoom, top + sy * zoom, sw * zoom, sh * zoom);
+    rect(ctx, 0, 0, this.lowW, this.lowH, 'rgba(12, 22, 38, .28)');
   }
 
   /** Eine Zettelfarbe je echtem Auftrag. So zeigt auch der Raum den Stand der Firma. */

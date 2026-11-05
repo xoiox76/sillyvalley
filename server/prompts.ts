@@ -1,6 +1,7 @@
 // Alles, was ein Agent über sich und seinen Auftrag erfährt. Das Profil liegt zusätzlich
 // als Datei im Arbeitsbereich, damit der Spieler nachlesen kann, was sein Mitarbeiter weiß.
 
+import { READ_DIR } from './workspace.ts';
 import { MODELS, ROLES, RULES, SKILLS, agentTitle, modelById, roleById, skillById, skillTitle } from '../shared/catalog.ts';
 import type { Agent, BoardItem, CommandRequest, Company, CompanyRole, Contract, CriterionVerdict, CustomSkill, Department, Job, Mandate, Meeting, MeetingOutcome, Order, StageKind, Verdict } from '../shared/types.ts';
 
@@ -66,7 +67,7 @@ export function agentProfile(company: Company, agent: Agent): string {
     '- wissen/: das Wissen der Firma. Lies dort, was für deine Aufgabe zählt.',
     '- ergebnisse/: Auftragsergebnisse, je Auftrag ein Unterordner.',
     '- dateien/: alles Übrige, das du für die Arbeit brauchst.',
-    company.projectDir ? projectNote(company.projectDir) : '',
+    company.repo ? repoNote() : company.projectDir ? projectNote(company.projectDir) : '',
     '',
     'Regeln, sie gehen jeder Fähigkeit vor:',
     '- Du wirst nach Verbrauch bezahlt, und das Budget ist echt. Arbeite gezielt und tu nur, was die Aufgabe verlangt.',
@@ -92,6 +93,9 @@ export function jobUpdate(agent: Agent, company: Company, skillIds: string[], jo
 }
 
 /** Das eingebundene Projekt liegt außerhalb des Arbeitsbereichs, deshalb braucht der Agent den vollen Pfad. */
+export const repoNote = () =>
+  `Die Firma arbeitet an einem Git-Repo. Zum Lesen liegt der Hauptstand unter ${READ_DIR}; was du dort änderst, geht verloren. Jeder Auftrag nennt dir seinen eigenen Ordner, nur dort bleiben Änderungen. Git selbst bedient die Firmenleitung.`;
+
 export const projectNote = (projectDir: string) =>
   `Die Firma arbeitet an einem bestehenden Projekt. Es liegt unter ${projectDir} und du darfst dort lesen und ändern. Gibt es dort eine CLAUDE.md oder AGENTS.md, lies sie vor der ersten Arbeit: Sie enthält die Regeln des Projekts. Ändere im Projekt nur, was der Auftrag verlangt, und lösche nichts.`;
 
