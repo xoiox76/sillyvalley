@@ -1,0 +1,12 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "sillyvailley",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["server/main.ts"],
+      "port": 4600,
+      "env": { "SILLYVAILLEY_BAUPUNKTE": "unendlich" }
+    }
+  ]
+}

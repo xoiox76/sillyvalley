@@ -1,0 +1,5 @@
+node_modules/
+dist/
+# Firmen, Arbeitsbereiche und Verbrauchsbuch des Spielers
+data/
+.DS_Store

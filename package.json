@@ -1,0 +1,27 @@
+{
+  "name": "sillyvailley",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Isometrisches Aufbauspiel, dessen Mitarbeiter echte KI-Agenten sind.",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "dev": "node server/main.ts",
+    "build": "vite build",
+    "start": "vite build && NODE_ENV=production node server/main.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test test/*.test.ts",
+    "test:live": "node test/live-proof.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "marked": "^18.1.2",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.5"
+  },
+  "dependencies": {
+    "@fontsource/vt323": "^5.3.0"
+  }
+}
