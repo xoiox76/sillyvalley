@@ -23,12 +23,15 @@ export interface Sprite {
 
 const CANVAS = { w: 168, h: 132, ax: 84, ay: 72 };
 
-function sprite(draw: (pen: Pen, l: Layer) => void, withOutline = true): Sprite {
-  const l = layer(CANVAS.w, CANVAS.h);
-  draw(new Pen(l.ctx, CANVAS.ax, CANVAS.ay), l);
+function sprite(draw: (pen: Pen, l: Layer) => void, withOutline = true, size = CANVAS): Sprite {
+  const l = layer(size.w, size.h);
+  draw(new Pen(l.ctx, size.ax, size.ay), l);
   if (withOutline) outline(l, INK);
-  return { canvas: l.canvas, ax: CANVAS.ax, ay: CANVAS.ay };
+  return { canvas: l.canvas, ax: size.ax, ay: size.ay };
 }
+
+/** Für Treppen, die unter den Boden reichen: mehr Platz nach unten. */
+const STAIR_CANVAS = { w: 168, h: 200, ax: 84, ay: 96 };
 
 const cache = new Map<string, Sprite>();
 function cached(key: string, build: () => Sprite): Sprite {
@@ -235,28 +238,43 @@ export function furnitureSprite(kind: 'shelf' | 'coffee' | 'plant', variant = 0,
 
 export type StairMode = 'up' | 'down' | 'both';
 
-/** Eine Treppe nach Etage: unten nur hinauf, oben nur hinunter, dazwischen ein Treppenhaus mit beiden Läufen. */
+/**
+ * Treppe nach Etage. Unten (EG) steigt sie vom Boden zur Bodendecke. Oben (OG) ist im Boden ein Loch,
+ * und die Stufen führen darunter ins Erdgeschoss. Dazwischen liegen beide Hälften nebeneinander.
+ */
 export function stairSprite(mode: StairMode): Sprite {
   return cached(`stairs-${mode}`, () =>
     sprite((pen) => {
       const steps = 8;
       const depth = 1.84 / steps;
       const y = (k: number) => 1.92 - (k + 1) * depth;
-      // Ein Lauf: hinauf steigt er nach hinten, hinunter nach vorn. Die Stufen liegen je Lauf in ihrer Breite.
-      const flight = (x0: number, width: number, down: boolean) => {
-        const top = (k: number) => (down ? (steps - k) : k + 1) * 6;
+      const j0 = 0.08;
+      // Aufgang: vorn niedrig, hinten hoch. Die höchste Stufe zuerst, sonst verdeckt sie die vorderen.
+      const up = (x0: number, width: number) => {
+        const top = (k: number) => (k + 1) * 6;
         for (let k = steps - 1; k >= 0; k--) {
           pen.box(x0, y(k), 0, width, depth, top(k), tri(k % 2 ? '#9aa4ae' : '#b4bcc4', 0.16));
           pen.faceJ(x0, y(k) + depth, top(k) - 1, 0, 0, width * 16, 1, '#dfe4e8');
         }
       };
+      // Loch im Boden: dunkle Öffnung, vorn an der Kante die Stufe am höchsten, hinten am tiefsten.
+      const down = (x0: number, width: number) => {
+        pen.box(x0, j0, 0, width, 1.84, 0, tri('#0d111a', 0.05));
+        for (let k = 0; k < steps; k++) {
+          const top = -(steps - k) * 6;
+          pen.box(x0, y(k), top - 6, width, depth, 6, tri(k % 2 ? '#5b6573' : '#6d7885', 0.16));
+          pen.faceJ(x0, y(k) + depth, top - 1, 0, 0, width * 16, 1, '#8c96a3');
+        }
+      };
       if (mode === 'both') {
-        flight(0.02, 0.46, false);
-        flight(0.52, 0.46, true);
+        up(0.02, 0.46);
+        down(0.52, 0.46);
+      } else if (mode === 'down') {
+        down(0.02, 0.96);
       } else {
-        flight(0.02, 0.96, mode === 'down');
+        up(0.02, 0.96);
       }
-    }),
+    }, true, STAIR_CANVAS),
   );
 }
 
