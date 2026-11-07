@@ -5,7 +5,7 @@ import path from 'node:path';
 import { after, before, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { BASE_CONTEXT_TOKENS, LOCATIONS, MODELS, RULES, agentTitle, isProp, commandRisks, costFromUsage, estimateStepUsd, locationById, modelById } from '../shared/catalog.ts';
-import { blockedEdges, blockedSet, checkPlacement, findPath, footprint, meetingDoor, meetingSeats, standingTile } from '../shared/layout.ts';
+import { blockedEdges, blockedSet, checkPlacement, findPath, footprint, meetingDoor, meetingSeats, regionOf, standingTile } from '../shared/layout.ts';
 import type { Look } from '../shared/types.ts';
 import { Engine } from '../server/engine.ts';
 import { meetingRooms } from '../shared/zones.ts';
@@ -34,8 +34,9 @@ const ECB = "<Cube time='2026-10-30'><Cube currency='USD' rate='1.25'/></Cube>";
 let dir: string;
 let engine: Engine;
 
-const makeEngine = async (data: string) => {
-  const e = new Engine(data, createAnthropicProvider(FAKE), new FxSource(data, async () => ECB));
+/** Die Test-Engine baut ohne Teamgrenze, damit Aufbauten schnell gehen. Die Grenzen prüft ein eigener Test. */
+const makeEngine = async (data: string, free = true) => {
+  const e = new Engine(data, createAnthropicProvider(FAKE), new FxSource(data, async () => ECB), 0, free);
   e.tourStepMs = 0;
   await e.init();
   return e;
@@ -175,10 +176,9 @@ test('Einstellen erfordert einen echten Lauf und einen freien Arbeitsplatz', asy
   await assert.rejects(engine.hire(company.id, { name: 'Alex', roleId: 'text', skillIds: [], modelId: 'claude-haiku-5-5', look: LOOK }), /Kein freier Arbeitsplatz/);
 });
 
-test('Auftrag: Ergebnisdatei, Abnahme, Baupunkte, Verbrauchsbuch', async () => {
+test('Auftrag: Ergebnisdatei, Abnahme, Verbrauchsbuch', async () => {
   const company = newCompany();
   const agent = await hired(company.id);
-  const points = company.buildPoints;
   const order = await engine.startOrder(company.id, orderInput(agent.id));
   assert.equal(agent.live.runId, company.runs.at(-1)!.id);
   assert.ok(engine.money(company).reservedEur > 0.9, 'Limit ist reserviert');
@@ -186,7 +186,6 @@ test('Auftrag: Ergebnisdatei, Abnahme, Baupunkte, Verbrauchsbuch', async () => {
   assert.equal(agent.live.kind, 'review');
   assert.equal(order.files.length, 1);
   assert.ok(fs.existsSync(path.join(engine.workspaceOf(company.id), order.files[0])));
-  assert.equal(company.buildPoints, points, 'Verbrauch allein bringt keine Baupunkte');
 
   const run = company.runs.at(-1)!;
   assert.equal(run.costSource, 'gemeldet');
@@ -195,7 +194,6 @@ test('Auftrag: Ergebnisdatei, Abnahme, Baupunkte, Verbrauchsbuch', async () => {
 
   engine.decide(company.id, order.id, { decision: 'accept', checked: [true] });
   assert.equal(order.status, 'accepted');
-  assert.equal(company.buildPoints, points + RULES.buildPointsPerAcceptedOrder);
   assert.equal(agent.live.kind, 'done');
   assert.throws(() => engine.decide(company.id, order.id, { decision: 'accept' }), /schon entschieden/);
 
@@ -295,33 +293,27 @@ test('Korrekturrunden sind begrenzt und bleiben in derselben Session', async () 
   assert.ok(Math.abs(agent.sessionCostUsd - single * company.runs.length) < 1e-9, 'Session-Stand läuft mit');
 });
 
-test('Bauen kostet Baupunkte, nie Budget, und prüft den Platz', () => {
+test('Bauen kostet nichts vom KI-Budget und prüft den Platz', () => {
   const company = newCompany();
   const money = engine.money(company).remainingEur;
-  const points = company.buildPoints;
   engine.placeItem(company.id, { kind: 'plant', i: 6, j: 3, rot: 0 });
-  assert.equal(company.buildPoints, points - 10);
   assert.equal(engine.money(company).remainingEur, money);
   assert.throws(() => engine.placeItem(company.id, { kind: 'plant', i: 6, j: 3, rot: 0 }), /belegt/);
   assert.throws(() => engine.placeItem(company.id, { kind: 'plant', i: 99, j: 0, rot: 0 }), /passt nicht/);
-  assert.throws(() => engine.placeItem(company.id, { kind: 'desk', i: 5, j: 3, rot: 0 }), /Baupunkte|belegt/);
+  assert.throws(() => engine.placeItem(company.id, { kind: 'desk', i: 5, j: 3, rot: 0 }), /belegt/);
 });
 
-test('Umzug nimmt Möbel mit und kostet Baupunkte', () => {
+test('Umzug nimmt Möbel mit', () => {
   const company = newCompany();
-  assert.throws(() => engine.moveCompany(company.id, 'buero'), /Baupunkte/);
   company.buildPoints = 200;
   const desks = company.placed.filter((p) => !isProp(p.kind)).length;
   engine.moveCompany(company.id, 'buero');
   assert.equal(company.locationId, 'buero');
-  assert.equal(company.buildPoints, 50);
   assert.equal(company.placed.filter((p) => !isProp(p.kind)).length, desks);
   assert.deepEqual(company.town.rented, ['postamt']);
   engine.moveCompany(company.id, 'garage');
   assert.equal(company.locationId, 'garage', 'Nach Hause kommt man immer zurück, kostenlos');
-  assert.equal(company.buildPoints, 50);
   engine.moveCompany(company.id, 'buero');
-  assert.equal(company.buildPoints, 50, 'Die Miete ist schon bezahlt');
 });
 
 /* ---------- Mehrere Agenten an einem Auftrag ---------- */
@@ -376,7 +368,6 @@ test('Eine Kette durchläuft alle Stufen, jeder Agent in der eigenen Session', a
   assert.equal(t.checker.live.kind, 'review');
   const report = fs.readFileSync(path.join(engine.workspaceOf(company.id), order.stages[2].verdict!.file), 'utf8');
   assert.match(report, /Geprüft von Robin/);
-  assert.equal(company.buildPoints, 60, 'Baupunkte erst bei der Abnahme');
 });
 
 test('Die Prüfung kann technisch nichts ändern und liefert ein strukturiertes Urteil', () => {
@@ -755,11 +746,9 @@ test('Ein Beschluss wird Firmenwissen und erreicht spätere Aufträge', async ()
   const meeting = await engine.startMeeting(company.id, meetingOf(t));
   await until(() => meeting.status === 'decision', 'Vorschlag');
   assert.ok(!fs.existsSync(file), 'Ohne Entscheidung des Menschen wird nichts Firmenwissen');
-  const before = company.buildPoints;
   engine.decideMeeting(company.id, meeting.id, { decision: 'accept' });
   assert.equal(meeting.status, 'closed');
   assert.equal(meeting.decision, 'accepted');
-  assert.equal(company.buildPoints, before, 'Eine Besprechung bringt keine Baupunkte');
   const saved = fs.readFileSync(file, 'utf8');
   assert.match(saved, /Wir bauen zuerst die Helferliste/);
   assert.match(saved, /Helferliste bauen/);
@@ -970,7 +959,6 @@ const poolOf = (companyId: string, id: string | null) => engine.snapshot(company
 
 test('Abteilungen sind Bereiche mit eigenem Team, Budget und Wissen', async () => {
   const { company, dept, mila, alex, robin } = await departmentCompany();
-  assert.equal(company.buildPoints, 500 - 2 * 40 - RULES.departmentCost);
   assert.match(fs.readFileSync(path.join(engine.workspaceOf(company.id), dept.knowledgeDir, 'abteilung.md'), 'utf8'), /Produkt/);
   assert.equal(engine.departmentOfAgent(company, mila), null, 'Der Starttisch liegt außerhalb');
   assert.equal(engine.departmentOfAgent(company, alex)?.id, dept.id);
@@ -1267,20 +1255,21 @@ test('Verträge mit unbekannter Rolle oder ohne Unterschrift stellen niemanden e
   await until(() => company.orders.every((o) => o.status !== 'running'), 'Aufträge der Attrappe');
 });
 
-test('Mit dem Schalter kostet Bauen nichts, und die Oberfläche erfährt davon', async () => {
-  const data = fs.mkdtempSync(path.join(os.tmpdir(), 'sillyvalley-unendlich-'));
-  const free = new Engine(data, createAnthropicProvider(FAKE), new FxSource(data, async () => ECB), 0, true);
-  free.tourStepMs = 0;
-  await free.init();
-  const company = free.createCompany({ name: 'Frei', idea: 'x', locationId: 'garage', budgetEur: 5 });
-  assert.equal(free.system().unlimitedBuild, true);
-  assert.equal(engine.system().unlimitedBuild, false);
-  for (let n = 0; n < 3; n++) free.placeItem(company.id, { kind: 'plant', i: 3 + n, j: 4, rot: 0 });
-  free.createDepartment(company.id, { name: 'Alles', i: 4, j: 1, w: 3, d: 3, budgetEur: 0 });
-  assert.equal(company.buildPoints, RULES.startBuildPoints, 'Nichts abgezogen');
-  free.shutdown();
+test('Räume richten sich nach der Teamgröße, der Schalter hebt die Grenze auf', async () => {
+  const data = fs.mkdtempSync(path.join(os.tmpdir(), 'sillyvalley-team-'));
+  const gated = await makeEngine(data, false);
+  const company = gated.createCompany({ name: 'Klein', idea: 'x', locationId: 'garage', budgetEur: 5 });
+  assert.equal(gated.system().unlimitedBuild, false);
+  assert.throws(() => gated.townAction(company.id, 'eckladen', { action: 'rent' }), /ab 2 Agenten/, 'Allein lohnt sich kein Laden');
+  assert.throws(() => gated.moveCompany(company.id, 'buero'), /ab 4 Agenten/);
+  for (let n = 0; n < 3; n++) gated.placeItem(company.id, { kind: 'plant', i: 3 + n, j: 4, rot: 0 });
+  gated.createDepartment(company.id, { name: 'Alles', i: 4, j: 1, w: 3, d: 3, budgetEur: 0 });
+  gated.shutdown();
+  assert.equal(engine.system().unlimitedBuild, true, 'Die übrigen Tests bauen ohne Grenze');
+  engine.moveCompany(newCompany().id, 'buero');
   fs.rmSync(data, { recursive: true, force: true });
 });
+
 
 /* ---------- Die Stadt ---------- */
 
@@ -1312,7 +1301,7 @@ test('Der Stadtplan ist schlüssig: nichts überlappt, und jeder Eingang ist zu 
   for (const p of PARCELS) if (p.kind === 'lot') assert.ok(p.price! > 0 && p.buildCost! > 0, p.id);
 });
 
-test('Ein Laden wird gemietet, dann bezogen; bezahlt wird in Baupunkten, nie aus dem KI-Budget', () => {
+test('Ein Laden wird gemietet, dann bezogen, nie aus dem KI-Budget bezahlt', () => {
   const company = newCompany(5);
   assert.deepEqual(company.town, { siteId: 'elternhaus', owned: [], rented: [], built: [], furnished: ['garage'] });
   const budget = engine.money(company).remainingEur;
@@ -1320,16 +1309,13 @@ test('Ein Laden wird gemietet, dann bezogen; bezahlt wird in Baupunkten, nie aus
   assert.throws(() => engine.townAction(company.id, 'diner', { action: 'rent' }), /nicht zu vermieten/);
   assert.throws(() => engine.townAction(company.id, 'gibt-es-nicht', { action: 'rent' }), /gibt es nicht/);
   company.buildPoints = 59;
-  assert.throws(() => engine.townAction(company.id, 'eckladen', { action: 'rent' }), /Baupunkte/);
   company.buildPoints = 70;
   engine.townAction(company.id, 'eckladen', { action: 'rent' });
-  assert.equal(company.buildPoints, 10);
   assert.throws(() => engine.townAction(company.id, 'eckladen', { action: 'rent' }), /schon gemietet/);
   assert.equal(company.locationId, 'garage', 'Mieten allein zieht noch nicht um');
   engine.townAction(company.id, 'eckladen', { action: 'move' });
   assert.equal(company.locationId, 'eckladen');
   assert.equal(company.town.siteId, 'eckladen');
-  assert.equal(company.buildPoints, 10);
   assert.throws(() => engine.townAction(company.id, 'eckladen', { action: 'move' }), /sitzt schon dort/);
   assert.equal(engine.money(company).remainingEur, budget, 'Das KI-Budget bleibt unberührt');
   engine.townAction(company.id, 'elternhaus', { action: 'move', locationId: 'kinderzimmer' });
@@ -1344,11 +1330,9 @@ test('Ein Grundstück wird gekauft, bebaut und bezogen, in dieser Reihenfolge', 
   assert.throws(() => engine.townAction(company.id, lot.id, { action: 'build' }), /zuerst/);
   assert.throws(() => engine.townAction(company.id, lot.id, { action: 'move' }), /noch nichts/);
   engine.townAction(company.id, lot.id, { action: 'buy' });
-  assert.equal(company.buildPoints, 500 - lot.price!);
   assert.throws(() => engine.townAction(company.id, lot.id, { action: 'buy' }), /gehört dir schon/);
   assert.throws(() => engine.townAction(company.id, lot.id, { action: 'move' }), /noch nichts/);
   engine.townAction(company.id, lot.id, { action: 'build' });
-  assert.equal(company.buildPoints, 500 - lot.price! - lot.buildCost!);
   assert.throws(() => engine.townAction(company.id, lot.id, { action: 'build' }), /schon dein Neubau/);
   const desks = company.placed.filter((p) => !isProp(p.kind)).length;
   engine.townAction(company.id, lot.id, { action: 'move' });
@@ -1402,10 +1386,8 @@ test('Alle Möbel lassen sich drehen, und die Figur steht vor der Vorderseite', 
   company.buildPoints = 500;
   const shelf = engine.placeItem(company.id, { kind: 'shelf', i: 6, j: 3, rot: 1 });
   assert.equal(shelf.rot, 1, 'Die Drehung bleibt beim Platzieren erhalten');
-  const before = company.buildPoints;
   engine.moveItem(company.id, shelf.id, { i: 6, j: 3, rot: 2 });
   assert.equal(shelf.rot, 2, 'An Ort und Stelle drehen geht');
-  assert.equal(company.buildPoints, before, 'Drehen kostet nichts');
   const plant = engine.placeItem(company.id, { kind: 'plant', i: 7, j: 4, rot: 3 });
   assert.equal(plant.rot, 3);
   assert.throws(() => engine.moveItem(company.id, shelf.id, { i: 6, j: 3, rot: 4 as never }), /vier Richtungen/);
@@ -1962,9 +1944,7 @@ test('Alles ist verschiebbar, auch was schon im Raum stand', () => {
 
 test('Wände: setzen, nicht doppelt, nur zwischen Feldern im Raum, entfernen', () => {
   const company = newCompany();
-  const points = company.buildPoints;
   const wall = engine.placeItem(company.id, { kind: 'wall', i: 1, j: 1, rot: 0 });
-  assert.equal(company.buildPoints, points, 'Wände kosten nichts');
   assert.equal(wall.kind, 'wall');
   assert.throws(() => engine.placeItem(company.id, { kind: 'wall', i: 1, j: 1, rot: 0 }), /schon eine Wand/);
   assert.throws(() => engine.placeItem(company.id, { kind: 'wall', i: 0, j: 0, rot: 0 }), /zwischen zwei Feldern/, 'Am Raumrand gibt es keine Wand');
@@ -1993,16 +1973,33 @@ test('Zonen: Ein Raum aus Wänden und Tür wird mit Tisch zum Besprechungsraum',
   assert.deepEqual(meetingRooms(company).map((r) => r.id), [table.id], 'An der Wand fehlt ein Platz: Dieser Tisch zählt nicht');
   const again = engine.setZone(company.id, { i: 9, j: 6, kind: 'break', name: 'Pause' });
   assert.equal(again.id, zone.id, 'Ein Raum hat genau eine Zone');
+  engine.setZone(company.id, { i: 9, j: 6, kind: 'break', name: 'Pause', floorStyle: 'teppich' });
+  assert.equal(zone.floorStyle, 'teppich', 'Der Raum bekommt seinen Boden');
+  assert.throws(() => engine.setZone(company.id, { i: 9, j: 6, kind: 'break', name: 'Pause', floorStyle: 'lava' }), /Bodenbelag/);
   assert.equal(meetingRooms(company).length, 0, 'Als Pausenraum finden dort keine Besprechungen statt');
   engine.removeZone(company.id, zone.id);
   assert.equal((company.zones ?? []).length, 0);
+});
+
+test('Fensterwand und Glaswand versperren wie eine Wand, die Tür nicht; alle trennen Räume', () => {
+  const at = (kind: 'wall' | 'door' | 'window' | 'glass') => ({ id: kind, kind, i: 2, j: 1, rot: 0 as const });
+  for (const kind of ['wall', 'window', 'glass'] as const) assert.ok(blockedEdges([at(kind)]).has('2,0>2,1'), kind);
+  assert.ok(!blockedEdges([at('door')]).has('2,0>2,1'), 'Durch die Tür geht man');
+  for (const kind of ['wall', 'door', 'window', 'glass'] as const) {
+    const fence = [0, 1, 2, 3, 4, 5, 6, 7].map((i) => ({ ...at(kind), id: `${kind}${i}`, i }));
+    assert.ok(!regionOf(garage, fence, { i: 0, j: 0 }).has('0,1'), `${kind} trennt den Raum`);
+  }
+  // In die hinteren Außenwände gehen Fenster, aber keine Wand und keine Tür.
+  assert.ok(checkPlacement(garage, [], { kind: 'window', i: 3, j: 0, rot: 0 }).ok);
+  assert.ok(checkPlacement(garage, [], { kind: 'glass', i: 0, j: 3, rot: 1 }).ok);
+  assert.ok(!checkPlacement(garage, [], { kind: 'wall', i: 3, j: 0, rot: 0 }).ok);
+  assert.ok(!checkPlacement(garage, [], { kind: 'window', i: 3, j: 6, rot: 0 }).ok, 'Vorn ist aufgeschnitten');
 });
 
 test('Inventar: einlagern, kostenlos neu platzieren, löschen ohne Erstattung', async () => {
   const company = newCompany();
   company.buildPoints = 100;
   const plant = engine.placeItem(company.id, { kind: 'plant', i: 4, j: 4, rot: 0 });
-  assert.equal(company.buildPoints, 90);
   engine.storeItem(company.id, plant.id);
   assert.ok(!company.placed.includes(plant));
   assert.deepEqual(company.inventory.map((s) => s.kind), ['plant']);
@@ -2011,10 +2008,8 @@ test('Inventar: einlagern, kostenlos neu platzieren, löschen ohne Erstattung', 
   assert.throws(() => engine.placeItem(company.id, { inventoryId: stored, i: 99, j: 4, rot: 0 }), /passt nicht/);
   assert.equal(company.inventory.length, 1, 'Ein abgewiesener Platz nimmt nichts aus dem Inventar');
   const again = engine.placeItem(company.id, { inventoryId: stored, i: 4, j: 3, rot: 1 });
-  assert.equal(company.buildPoints, 90, 'Neu platzieren kostet nichts');
   assert.equal(company.inventory.length, 0);
   engine.deleteItem(company.id, again.id);
-  assert.equal(company.buildPoints, 90, 'Löschen erstattet nichts');
   assert.ok(!company.placed.some((p) => p.id === again.id));
   engine.storeItem(company.id, company.placed.find((p) => p.kind === 'boxes')!.id);
   engine.deleteItem(company.id, company.inventory[0].id);
@@ -2190,16 +2185,14 @@ const builtHome = (size: 'grund-birke' | 'grund-elm' = 'grund-birke') => {
   return company;
 };
 
-test('Anbau: nur am eigenen Haus, nur soweit das Grundstück reicht, in Baupunkten', () => {
+test('Anbau: nur am eigenen Haus, nur soweit das Grundstück reicht', () => {
   const rented = newCompany();
   rented.buildPoints = 1000;
   assert.throws(() => engine.expandBuilding(rented.id, { kind: 'breiter' }), /eigenen Neubau/);
   const company = builtHome();
-  const before = company.buildPoints;
   const start = roomOf(company);
   engine.expandBuilding(company.id, { kind: 'breiter' });
   engine.expandBuilding(company.id, { kind: 'tiefer' });
-  assert.equal(company.buildPoints, before - 100);
   assert.deepEqual([roomOf(company).w, roomOf(company).d], [start.w + 1, start.d + 1]);
   assert.equal(roomOf(company).door.j, roomOf(company).d - 1, 'Die Tür bleibt in der Wand zur Strasse');
   engine.placeItem(company.id, { kind: 'plant', i: start.w, j: start.d, rot: 0 });
@@ -2207,7 +2200,6 @@ test('Anbau: nur am eigenen Haus, nur soweit das Grundstück reicht, in Baupunkt
   engine.expandBuilding(company.id, { kind: 'breiter' });
   assert.throws(() => engine.expandBuilding(company.id, { kind: 'breiter' }), /Grundstück nicht her/);
   company.buildPoints = 0;
-  assert.throws(() => engine.expandBuilding(company.id, { kind: 'tiefer' }), /Baupunkte/);
 });
 
 test('Stockwerke: Du wählst den Platz für den Aufgang, Möbel und Abteilungen gehören zu ihrer Etage', async () => {
@@ -2219,9 +2211,7 @@ test('Stockwerke: Du wählst den Platz für den Aufgang, Möbel und Abteilungen 
   assert.throws(() => engine.expandBuilding(company.id, { kind: 'etage', shaft: { kind: 'stairs', i: 1, j: 6, rot: 0 } }), /Feld frei bleiben/);
   assert.throws(() => engine.expandBuilding(company.id, { kind: 'etage', shaft: { kind: 'stairs', i: 0, j: 0, rot: 2 } }), /freies Feld im Raum/, 'Die Drehung wählt die Seite');
   engine.deleteItem(company.id, occupied.id);
-  const cost = company.buildPoints;
   engine.expandBuilding(company.id, { kind: 'etage', shaft: { kind: 'stairs', i: 1, j: 6, rot: 0 } });
-  assert.equal(company.buildPoints, cost - 190, 'Stockwerk und Treppe');
   const stairs = company.placed.filter((p) => p.kind === 'stairs');
   assert.deepEqual(stairs.map((p) => p.floor ?? 0).sort(), [0, 1], 'Auf jeder Etage an derselben Stelle');
   assert.throws(() => engine.moveItem(company.id, stairs[0].id, { i: 3, j: 3, rot: 0 }), /bleibt, wo sie ist/);
@@ -2473,7 +2463,6 @@ test('Chefschreibtisch: kostenlos, nur einmal, kein Platz für Mitarbeiter', () 
   company.buildPoints = 0;
   const seats = engine.snapshot(company.id).seats.total;
   const desk = engine.placeItem(company.id, { kind: 'ceoDesk', i: 2, j: 3, rot: 1 });
-  assert.equal(company.buildPoints, 0);
   assert.equal(engine.snapshot(company.id).seats.total, seats, 'Niemand sonst sitzt dort');
   assert.throws(() => engine.placeItem(company.id, { kind: 'ceoDesk', i: 5, j: 3, rot: 0 }), /schon einen/);
   engine.storeItem(company.id, desk.id);

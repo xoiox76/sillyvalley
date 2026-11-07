@@ -61,6 +61,115 @@ export function doorSprite(rot: Rotation): Sprite {
   );
 }
 
+/** Kanten-Bauteile: Wand, Tür, Fensterwand mit breitem Fensterband, bodentiefe Glaswand. */
+export function edgeSprite(kind: string, rot: Rotation, low = false): Sprite {
+  if (low) return lowEdgeSprite(kind, rot);
+  if (kind === 'door') return doorSprite(rot);
+  if (kind === 'window') return windowSprite(rot);
+  if (kind === 'glass') return glassWallSprite(rot);
+  return wallSprite(rot);
+}
+
+/** Heruntergeschaltete Wände: nur ein Sockel, damit man in die Räume sieht. Türen zeigen zwei Pfosten. */
+export function lowEdgeSprite(kind: string, rot: Rotation): Sprite {
+  return cached(`low${kind}${rot % 2}`, () =>
+    sprite((pen) => {
+      const along = rot % 2 === 0;
+      const color = kind === 'glass' || kind === 'window' ? tri('#9fd8e8', 0.08) : kind === 'door' ? tri('#7a5a3c', 0.12) : tri('#d9dee6', 0.12);
+      const part = (from: number, to: number) => (along ? pen.box(from, -0.07, 0, to - from, 0.14, 7, color) : pen.box(-0.07, from, 0, 0.14, to - from, 7, color));
+      if (kind === 'door') {
+        part(0, 0.14);
+        part(0.86, 1);
+      } else {
+        part(0, 1);
+      }
+    }, false),
+  );
+}
+
+/** Wand mit breitem Fenster: Brüstung unten, Glasband, Sturz oben. */
+export function windowSprite(rot: Rotation): Sprite {
+  return cached(`window${rot % 2}`, () =>
+    sprite((pen) => {
+      const wall = tri('#d9dee6', 0.12);
+      const glass = tri('#9fd8e8', 0.08);
+      const along = rot % 2 === 0;
+      const part = (z: number, h: number, c: typeof wall, thick = 0.14) =>
+        along ? pen.box(0, -thick / 2, z, 1, thick, h, c) : pen.box(-thick / 2, 0, z, thick, 1, h, c);
+      part(0, 16, wall);
+      part(16, 26, glass, 0.06);
+      part(42, 8, wall);
+    }, false),
+  );
+}
+
+/** Bodentiefe Glaswand mit schmalem Rahmen. */
+export function glassWallSprite(rot: Rotation): Sprite {
+  return cached(`glasswall${rot % 2}`, () =>
+    sprite((pen) => {
+      const frame = tri('#3b4658', 0.1);
+      const glass = tri('#a8e0ee', 0.08);
+      if (rot % 2 === 0) {
+        pen.box(0, -0.03, 0, 1, 0.06, 50, glass);
+        pen.box(0, -0.05, 0, 0.06, 0.1, 50, frame);
+        pen.box(0, -0.05, 48, 1, 0.1, 2, frame);
+      } else {
+        pen.box(-0.03, 0, 0, 0.06, 1, 50, glass);
+        pen.box(-0.05, 0, 0, 0.1, 0.06, 50, frame);
+        pen.box(-0.05, 0, 48, 0.1, 1, 2, frame);
+      }
+    }, false),
+  );
+}
+
+/** Spielautomat für den Gaming-Raum. */
+export function arcadeSprite(): Sprite {
+  return cached('arcade', () =>
+    sprite((pen) => {
+      pen.box(0.18, 0.2, 0, 0.64, 0.6, 38, tri('#3a2f5c', 0.14));
+      pen.box(0.18, 0.2, 38, 0.64, 0.6, 4, tri('#b07cf0', 0.12));
+      pen.faceJ(0.18, 0.8, 0, 2, 22, 6, 9, '#5eeac0');
+      pen.faceJ(0.18, 0.8, 0, 3, 23, 4, 7, '#1b2436');
+      pen.faceJ(0.18, 0.8, 0, 2, 16, 2, 2, '#e5534b');
+      pen.faceJ(0.18, 0.8, 0, 6, 16, 2, 2, '#f8b62d');
+    }),
+  );
+}
+
+/** Sitzsack. */
+export function beanbagSprite(): Sprite {
+  return cached('beanbag', () =>
+    sprite((pen) => {
+      const c = tri('#d0703c', 0.16);
+      pen.box(0.16, 0.16, 0, 0.68, 0.68, 7, c);
+      pen.box(0.24, 0.24, 7, 0.52, 0.52, 3, c);
+      pen.box(0.2, 0.2, 7, 0.22, 0.6, 8, c);
+    }),
+  );
+}
+
+/** Eine Tafel auf Rollen: zwei Beine, eine weiße Fläche, ein paar Zettel. */
+export function boardSprite(rot: Rotation): Sprite {
+  return cached(`board${rot % 2}`, () =>
+    sprite((pen) => {
+      const leg = tri('#59636f', 0.1);
+      const odd = rot % 2 === 1;
+      if (!odd) {
+        pen.box(0.12, 0.45, 0, 0.08, 0.1, 20, leg);
+        pen.box(0.8, 0.45, 0, 0.08, 0.1, 20, leg);
+        pen.box(0.06, 0.45, 18, 0.88, 0.08, 22, tri('#eef1f4', 0.1));
+        pen.faceJ(0.06, 0.53, 18, 3, 4, 4, 4, '#f8b62d');
+        pen.faceJ(0.06, 0.53, 18, 9, 10, 4, 4, '#5eeac0');
+        pen.faceJ(0.06, 0.53, 18, 4, 13, 4, 4, '#e5534b');
+      } else {
+        pen.box(0.45, 0.12, 0, 0.1, 0.08, 20, leg);
+        pen.box(0.45, 0.8, 0, 0.1, 0.08, 20, leg);
+        pen.box(0.45, 0.06, 18, 0.08, 0.88, 22, tri('#eef1f4', 0.1));
+      }
+    }),
+  );
+}
+
 /** Für Treppen, die unter den Boden reichen: mehr Platz nach unten. */
 const STAIR_CANVAS = { w: 168, h: 200, ax: 84, ay: 96 };
 
@@ -540,3 +649,109 @@ export function glassSegment(axis: 'i' | 'j', door: boolean): Sprite {
 }
 
 export const ROOM_HEIGHT = GLASS_H;
+
+/* ---------- Bilder für Bau-Menü und Inventar ---------- */
+
+const icons = new Map<string, string>();
+
+/** Ein Bild des Möbelstücks aus denselben Sprites wie im Büro, eng zugeschnitten. Für das Bau-Menü und das Inventar. */
+export function itemIcon(kind: string): string {
+  const known = icons.get(kind);
+  if (known) return known;
+  const W = 200;
+  const H = 200;
+  const ax = 100;
+  const ay = 130;
+  const l = layer(W, H);
+  const put = (s: Sprite, i = 0, j = 0) => {
+    const x = ax + (i - j) * 16;
+    const y = ay + (i + j) * 8;
+    l.ctx.drawImage(s.canvas, x - s.ax, y - s.ay);
+  };
+  switch (kind) {
+    case 'desk':
+      put(chairBase(0));
+      put(deskTable(0));
+      put(chairBack(0));
+      break;
+    case 'ceoDesk':
+      put(chairBase(0));
+      put(ceoTable(0));
+      put(chairBack(0));
+      break;
+    case 'shelf':
+    case 'coffee':
+    case 'plant':
+      put(furnitureSprite(kind, 0, 0));
+      break;
+    case 'meeting':
+      put(meetingFloor());
+      put(meetingTable());
+      break;
+    case 'table':
+      put(meetingTable(), -1, -1);
+      break;
+    case 'wall':
+      put(wallSprite(0));
+      break;
+    case 'door':
+      put(doorSprite(0));
+      break;
+    case 'board':
+      put(boardSprite(0));
+      break;
+    case 'window':
+      put(windowSprite(0));
+      break;
+    case 'glass':
+      put(glassWallSprite(0));
+      break;
+    case 'arcade':
+      put(arcadeSprite());
+      break;
+    case 'beanbag':
+      put(beanbagSprite());
+      break;
+    case 'stairs':
+      put(stairSprite('up'));
+      break;
+    case 'lift':
+      put(liftShell());
+      break;
+    case 'department': {
+      // Ein abgesteckter Bereich: getönte Felder mit Rand.
+      const pen = new Pen(l.ctx, ax, ay);
+      pen.floorPoly(0, 0, 3, 2, '#2f6f68');
+      pen.floorPoly(0.15, 0.15, 2.7, 1.7, '#3f8f86');
+      break;
+    }
+    default:
+      if (PROPS.some((p) => p.kind === kind)) put(propSprite({ kind: kind as FixedProp['kind'] }));
+  }
+  const url = crop(l.canvas);
+  icons.set(kind, url);
+  return url;
+}
+
+/** Schneidet den durchsichtigen Rand weg. */
+function crop(canvas: HTMLCanvasElement): string {
+  const ctx = canvas.getContext('2d')!;
+  const { data, width, height } = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  let x0 = width;
+  let y0 = height;
+  let x1 = -1;
+  let y1 = -1;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      if (data[(y * width + x) * 4 + 3] === 0) continue;
+      if (x < x0) x0 = x;
+      if (x > x1) x1 = x;
+      if (y < y0) y0 = y;
+      if (y > y1) y1 = y;
+    }
+  }
+  if (x1 < 0) return canvas.toDataURL();
+  const out = layer(x1 - x0 + 1, y1 - y0 + 1);
+  out.ctx.drawImage(canvas, -x0, -y0);
+  return out.canvas.toDataURL();
+}

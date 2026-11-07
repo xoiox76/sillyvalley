@@ -311,6 +311,12 @@ export const FURNITURE: FurnitureInfo[] = [
   { kind: 'plant', title: 'Pflanze', blurb: 'Macht das Büro wohnlicher.', cost: 10, size: '1 × 1 Feld' },
   { kind: 'door', title: 'Tür', blurb: 'Eine Tür in einer Kante. Räume brauchen eine, damit man hineinkommt. Klick auf eine Tür entfernt sie.', cost: 0, size: '1 Kante' },
   { kind: 'table', title: 'Besprechungstisch', blurb: 'Steht er in einem Raum, den du als Besprechungsraum benennst, finden dort Besprechungen statt.', cost: 40, size: '2 × 2 Felder' },
+  { kind: 'window', title: 'Fensterwand', blurb: 'Wand mit breitem Fenster. Wie die Wand: Klick setzt den Anfang, ein zweiter zieht sie.', cost: 0, size: '1 Kante' },
+  { kind: 'glass', title: 'Glaswand', blurb: 'Bodentief verglast. Trennt Räume, ohne sie zu verstecken.', cost: 0, size: '1 Kante' },
+  { kind: 'sofa', title: 'Sofa', blurb: 'Für den Sozialbereich. Freie Agenten setzen sich gern hierhin.', cost: 0, size: '1 × 2 Felder' },
+  { kind: 'beanbag', title: 'Sitzsack', blurb: 'Für Sozialbereich und Gaming-Raum.', cost: 0, size: '1 × 1 Feld' },
+  { kind: 'arcade', title: 'Spielautomat', blurb: 'Im Gaming-Raum zocken freie Agenten hier.', cost: 0, size: '1 × 1 Feld' },
+  { kind: 'board', title: 'Tafel', blurb: 'Zeigt die Zettel. In einer Abteilung nur die ihrer Leute, sonst alle.', cost: 0, size: '1 × 1 Feld' },
   { kind: 'wall', title: 'Wand', blurb: 'Klick setzt den Anfang, ein zweiter Klick auf derselben Linie zieht die Wand. Klick auf eine Wand reißt sie ab.', cost: 0, size: '1 Kante' },
 ];
 
@@ -353,7 +359,7 @@ export interface LocationInfo {
   keep?: { i: number; j: number }[];
   props: FixedProp[];
   startItems: Omit<PlacedItem, 'id'>[];
-  /** null: Startort. Sonst Baupunkte für den Umzug. */
+  /** null: Startort. Sonst ein Ort, der sich ab einer bestimmten Teamgröße lohnt. */
   moveCost: number | null;
 }
 
@@ -386,6 +392,28 @@ export const LOCATIONS: LocationInfo[] = [
     ],
     startItems: [{ kind: 'desk', i: 2, j: 1, rot: 0 }],
     moveCost: null,
+  },
+  {
+    id: 'coworking',
+    title: 'Shared Office',
+    blurb: '10 × 8 Felder im Hinterhof. Für ein kleines Team, das aus dem Laden herauswächst.',
+    w: 10,
+    d: 8,
+    door: { i: 5, j: 7 },
+    props: [{ kind: 'sofa', i: 0, j: 5, w: 1, d: 2 }],
+    startItems: [],
+    moveCost: 0,
+  },
+  {
+    id: 'fabrik',
+    title: 'Alte Fabrikhalle',
+    blurb: '16 × 12 Felder unter einem Sheddach. Viel Platz, die Räume ziehst du selbst.',
+    w: 16,
+    d: 12,
+    door: { i: 8, j: 11 },
+    props: [{ kind: 'lockers', i: 0, j: 0, w: 2, d: 1 }, { kind: 'workbench', i: 12, j: 0, w: 3, d: 1 }],
+    startItems: [],
+    moveCost: 0,
   },
   {
     id: 'eckladen',

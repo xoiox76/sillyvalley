@@ -1,7 +1,7 @@
 // Zonen: Räume aus Wänden und Türen, denen der Spieler einen Zweck und einen Namen gibt.
 import { floorOf, itemsOnFloor, roomOf } from './building.ts';
 import { blockedSet, meetingSeats, regionOf, type Seat, type Tile } from './layout.ts';
-import type { Company, PlacedItem, Zone, ZoneKind } from './types.ts';
+import type { Company, FloorStyle, PlacedItem, Zone, ZoneKind } from './types.ts';
 
 type ZoneCompany = Pick<Company, 'locationId' | 'town' | 'placed' | 'zones'>;
 
@@ -9,11 +9,24 @@ const key = (t: Tile) => `${t.i},${t.j}`;
 
 export const ZONE_KINDS: { kind: ZoneKind; title: string }[] = [
   { kind: 'meeting', title: 'Besprechungsraum' },
-  { kind: 'break', title: 'Pausenraum' },
+  { kind: 'break', title: 'Sozialbereich' },
+  { kind: 'gaming', title: 'Gaming-Raum' },
+  { kind: 'lobby', title: 'Lobby' },
+  { kind: 'ceo', title: 'Chefbüro' },
   { kind: 'other', title: 'Eigener Raum' },
 ];
 
-export const ZONE_COLORS: Record<ZoneKind, string> = { meeting: '#5eeac0', break: '#f8b62d', other: '#9fb0c8' };
+export const ZONE_COLORS: Record<ZoneKind, string> = { meeting: '#5eeac0', break: '#f8b62d', gaming: '#b07cf0', lobby: '#6fb3ff', ceo: '#e5534b', other: '#9fb0c8' };
+
+export const FLOOR_STYLES: { style: FloorStyle; title: string }[] = [
+  { style: 'holz', title: 'Holz' },
+  { style: 'teppich', title: 'Teppich' },
+  { style: 'fliesen', title: 'Fliesen' },
+  { style: 'beton', title: 'Beton' },
+];
+
+/** Wohin freie Agenten gern gehen, und woran sie sich dort aufhalten. */
+export const LOUNGE_SPOTS: Partial<Record<ZoneKind, string[]>> = { break: ['coffee', 'sofa', 'beanbag'], gaming: ['arcade', 'beanbag', 'sofa'] };
 
 /** Die Felder eines Raums um ein Feld, auf einer Etage. */
 export function regionAt(company: ZoneCompany, floor: number, tile: Tile): Set<string> {

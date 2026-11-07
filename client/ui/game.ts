@@ -93,6 +93,10 @@ export function renderGame(root: HTMLElement, companyId: string, onLeave: () => 
   let build: Build | null = null;
   /** Beim Wand-Werkzeug: der erste Klick. Der zweite Klick auf derselben Linie zieht die Wand bis dorthin. */
   let wallAnchor: WallEdge | null = null;
+  /** Welche Abteilung die gerade geöffnete Tafel zeigt. null: alle Zettel. */
+  let boardDepartment: string | null = null;
+  /** Gezogene Wände niedrig zeichnen, damit man in die Räume sieht. */
+  let wallsLow = false;
   /** Raum benennen: erst in den Raum klicken, dann Zweck und Name eintragen. */
   let roomMode: { target: Tile | null } | null = null;
   let buildMessage = '';
@@ -217,12 +221,22 @@ export function renderGame(root: HTMLElement, companyId: string, onLeave: () => 
       goOutside();
     },
     onBoardClick() {
+      boardDepartment = null;
       tab = 'projekte';
       els.panel.scrollTop = 0;
       refreshFiles();
       render();
     },
     onItemClick(item: PlacedItem) {
+      // Eine aufgestellte Tafel zeigt die Zettel der Abteilung, in der sie steht. Sonst alle.
+      if (item.kind === 'board' && tab !== 'bauen' && snap) {
+        const floor = floorOf(item);
+        boardDepartment = snap.company.departments.find((d) => floorOf(d) === floor && item.i >= d.i && item.j >= d.j && item.i < d.i + d.w && item.j < d.j + d.d)?.id ?? null;
+        tab = 'projekte';
+        els.panel.scrollTop = 0;
+        render();
+        return;
+      }
       // Treppe und Fahrstuhl führen auf die nächste Etage. Beim Bauen lassen sie sich auswählen.
       if (isShaft(item.kind) && tab !== 'bauen') {
         changeFloor(1, true);
@@ -318,7 +332,7 @@ export function renderGame(root: HTMLElement, companyId: string, onLeave: () => 
     }
     if (isEdgeKind(build.kind) && !build.id) {
       const here: WallEdge = { i: build.tile.i, j: build.tile.j, rot: build.rot };
-      const run = build.kind === 'wall' && wallAnchor ? wallRun(wallAnchor, here) : [here];
+      const run = build.kind !== 'door' && wallAnchor ? wallRun(wallAnchor, here) : [here];
       world.setGhost({ kind: build.kind, i: here.i, j: here.j, rot: here.rot, run });
       return;
     }
@@ -399,12 +413,13 @@ export function renderGame(root: HTMLElement, companyId: string, onLeave: () => 
       return;
     }
     const run = wallRun(wallAnchor, edge);
+    const kind = build.kind;
     wallAnchor = null;
     buildMessage = '';
     for (const segment of run) {
-      if (wallOn(segment)) continue;
+      if (wallOn(segment, kind)) continue;
       try {
-        await api.placeItem(companyId, { kind: 'wall', floor: viewFloor, i: segment.i, j: segment.j, rot: segment.rot });
+        await api.placeItem(companyId, { kind, floor: viewFloor, i: segment.i, j: segment.j, rot: segment.rot });
       } catch (err) {
         buildMessage = (err as Error).message;
         break;
@@ -1235,6 +1250,15 @@ export function renderGame(root: HTMLElement, companyId: string, onLeave: () => 
       syncGhost();
       render();
     },
+    'board-all'() {
+      boardDepartment = null;
+      render();
+    },
+    'toggle-walls'() {
+      wallsLow = !wallsLow;
+      world.setWallsLow(wallsLow);
+      render();
+    },
     'room-mode'() {
       build = null;
       wallAnchor = null;
@@ -1251,8 +1275,9 @@ export function renderGame(root: HTMLElement, companyId: string, onLeave: () => 
       if (!target) return;
       const kind = (els.panel.querySelector('select[name=zoneKind]') as HTMLSelectElement | null)?.value ?? 'other';
       const name = (els.panel.querySelector('input[name=zoneName]') as HTMLInputElement | null)?.value ?? '';
+      const floorStyle = (els.panel.querySelector('select[name=zoneFloor]') as HTMLSelectElement | null)?.value || null;
       try {
-        await api.setZone(companyId, { floor: viewFloor, i: target.i, j: target.j, kind, name });
+        await api.setZone(companyId, { floor: viewFloor, i: target.i, j: target.j, kind, name, floorStyle });
         cancelBuild();
       } catch (err) {
         buildMessage = (err as Error).message;
@@ -1961,9 +1986,9 @@ export function renderGame(root: HTMLElement, companyId: string, onLeave: () => 
     const openMeeting = snap.company.meetings.find((m) => m.id === selectedMeeting);
     if (tab === 'team' && openMeeting) panel = meetingPanel(snap, openMeeting);
     else if (tab === 'team') panel = teamPanel(snap, selectedAgent, selectedDepartment);
-    else if (tab === 'projekte') panel = projectsPanel(snap, selectedOrder, selectedMandate, files, folds, selectedNote);
+    else if (tab === 'projekte') panel = projectsPanel(snap, selectedOrder, selectedMandate, files, folds, selectedNote, boardDepartment);
     else if (tab === 'finanzen') panel = financePanel(snap);
-    else if (tab === 'bauen') panel = buildPanel(snap, build?.kind ?? null, Boolean(build?.id), buildMessage, build?.kind === 'department' && build.anchor !== null, build?.inventoryId ?? null, confirmDelete, viewFloor < 100, roomNaming());
+    else if (tab === 'bauen') panel = buildPanel(snap, build?.kind ?? null, Boolean(build?.id), buildMessage, build?.kind === 'department' && build.anchor !== null, build?.inventoryId ?? null, confirmDelete, viewFloor < 100, roomNaming(), wallsLow);
     if (panel) morph(els.panel, panel);
     // Eine neue Antwort soll sichtbar sein, ohne dass man erst danach suchen muss.
     const chatLength = snap.company.agents.find((a) => a.id === selectedAgent)?.chat.length ?? 0;

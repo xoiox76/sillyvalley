@@ -39,7 +39,7 @@ a { color: var(--mint); }
 .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 
 /* Pixelecken statt Rundung */
-.btn, .panel, .modal, .toast, .chip-room, .chip-seats, input, textarea, .first-steps, .agent-row, .order-row, .catalog-row, .pick, .model-row, .location-card, .company-row, .file-row, .budget-pill, .alert, .note, .tab {
+.btn, .panel, .modal, .toast, .chip-room, .chip-seats, input, textarea, .first-steps, .agent-row, .order-row, .catalog-row, .catalog-tile, .pick, .model-row, .location-card, .company-row, .file-row, .budget-pill, .alert, .note, .tab {
   clip-path: polygon(0 3px, 3px 3px, 3px 0, calc(100% - 3px) 0, calc(100% - 3px) 3px, 100% 3px, 100% calc(100% - 3px), calc(100% - 3px) calc(100% - 3px), calc(100% - 3px) 100%, 3px 100%, 3px calc(100% - 3px), 0 calc(100% - 3px));
 }
 
@@ -548,6 +548,15 @@ kbd { font: inherit; padding: 0 5px; background: var(--raised); border: 1px soli
 .catalog-row .num { color: var(--mint); font-weight: 600; font-size: 24px; }
 .catalog-row.selected { background: var(--mint); border-color: var(--mint); color: var(--ink); }
 .catalog-row.selected small, .catalog-row.selected .num { color: var(--ink); }
+.catalog-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(78px, 1fr)); gap: 6px; }
+.catalog-tile { position: relative; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; gap: 3px; width: 100%; min-height: 86px; padding: 8px 4px 5px; background: var(--raised); border: 2px solid var(--line); cursor: pointer; }
+.catalog-tile img { flex: 1; max-height: 52px; max-width: 64px; object-fit: contain; image-rendering: pixelated; }
+.catalog-tile .tile-name { font-size: 16px; line-height: 1; text-align: center; }
+.catalog-tile .num { position: absolute; top: 2px; right: 4px; font-size: 16px; color: var(--mint); }
+.catalog-tile:hover:not(:disabled) { border-color: #47698f; }
+.catalog-tile.selected { background: var(--mint); border-color: var(--mint); color: var(--ink); }
+.catalog-tile.selected .num { color: var(--ink); }
+.catalog-tile:disabled { opacity: .5; cursor: not-allowed; }
 
 /* Finanzen */
 .budget-big { display: flex; align-items: baseline; justify-content: space-between; }

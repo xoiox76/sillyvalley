@@ -98,7 +98,37 @@ function newBuild(right: string, left: string): Theme {
   };
 }
 
+/** Backstein mit Fugen, versetzt je Reihe. */
+const brick = (u: number, v: number, base: string, joint: string) => {
+  const row = Math.floor(v / 5);
+  if (v % 5 === 0 || (u + (row % 2) * 5) % 10 === 0) return joint;
+  const tone = hash2(Math.floor((u + (row % 2) * 5) / 10), row);
+  return tone > 0.8 ? darken(base, 0.08) : tone < 0.2 ? lighten(base, 0.06) : base;
+};
+
 const THEMES: Record<LocationId, Theme> = {
+  coworking: {
+    floor: woodFloor,
+    wallRight: (u, v) => skirting(v, '#4d5159') ?? (u % 30 < 2 ? '#c9cfd6' : '#dfe4ea'),
+    wallLeft: (u, v) => skirting(v, '#42454c') ?? (u % 30 < 2 ? '#b3bac3' : '#c8ced6'),
+    pillar: '#2f6f62',
+    cap: '#e4e4dc',
+    frontFace: '#9da29c',
+    board: { u: 20, v: 24, w: 36, h: 20 },
+  },
+  fabrik: {
+    floor: (i, j) => {
+      // Betonboden mit gelben Fahrlinien.
+      if ((frac(j / 6) < 0.035 && frac(i / 1.5) < 0.6) || frac(i / 8) < 0.02) return '#c9a227';
+      return concreteFloor(i, j);
+    },
+    wallRight: (u, v) => skirting(v, '#3f3a38') ?? brick(u, v, '#9a4f3c', '#6e5a52'),
+    wallLeft: (u, v) => skirting(v, '#35302e') ?? brick(u, v, '#7d4031', '#5a4a44'),
+    pillar: '#3b4658',
+    cap: '#8c8c84',
+    frontFace: '#7a6a62',
+    board: { u: 28, v: 24, w: 44, h: 22 },
+  },
   kinderzimmer: {
     floor: woodFloor,
     wallRight: (u, v) => skirting(v, '#d6d2c6') ?? (v === 4 ? '#8a9aa3' : (Math.floor(u / 12) % 2 ? '#7f9aa8' : '#7692a1')),

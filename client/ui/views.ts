@@ -7,17 +7,18 @@ import {
   BASE_CONTEXT_TOKENS, agentTitle, estimateStepUsd, estimateTokensOfChars, locationById, modelById, roleById, skillById, skillTitle,
 } from '../../shared/catalog.ts';
 import { deskDepartment } from '../../shared/layout.ts';
-import { ZONE_COLORS, ZONE_KINDS, meetingRooms } from '../../shared/zones.ts';
+import { FLOOR_STYLES, ZONE_COLORS, ZONE_KINDS, meetingRooms } from '../../shared/zones.ts';
 import { NOTE_COLORS, boardNotes, noteLook, roleColor, type BoardNote } from '../../shared/board.ts';
 import { colorInText } from '../../shared/roleMarkdown.ts';
 import { quotaClosedUntil } from '../../shared/quota.ts';
 import { ROADMAP_PHASES, roadmapRows } from '../../shared/roadmap.ts';
 import { CONNECTION_KINDS, OPENAI_PRICES_AS_OF, connectionKind } from '../../shared/providers.ts';
 import { SPRINT_COLUMNS, openSprint, scrumMaster, sprintCommitted, sprintRows } from '../../shared/scrum.ts';
-import { baseFloorOf, siteAt, siteBase, EXTEND_COST, SHAFT_COST, buildLimits, buildingAt, floorCost, floorName, floorOf, isShaft, roomAt, roomOf } from '../../shared/building.ts';
+import { baseFloorOf, siteAt, siteBase, buildLimits, buildingAt, floorName, floorOf, isShaft, roomAt, roomOf } from '../../shared/building.ts';
 import type { Agent, BoardItem, CommandRequest, Company, CompanyRole, Contract, CustomSkill, Department, LiveKind, Look, Mandate, Meeting, Order, Pool, ProjectAgent, Proposal, Run, Snapshot, Sprint, Stage, StageKind, Team, Zone } from '../../shared/types.ts';
-import { HOME_ROOMS, TOWN_NAME, type City, type Parcel } from '../../shared/town.ts';
+import { HOME_ROOMS, TOWN_NAME, teamFor, teamForFloor, teamSize, type City, type Parcel } from '../../shared/town.ts';
 import { portraitUrl } from '../world/characters.ts';
+import { itemIcon } from '../world/art.ts';
 import type { FileEntry } from './api.ts';
 import { api } from './api.ts';
 import { ORDER_STATUS, RUN_KIND, RUN_STATUS, count, duration, eur, eurFree, eurFrom, fxNote, percent, time, untilTime, usd } from './format.ts';
@@ -1534,7 +1535,7 @@ export function departmentModal(s: Snapshot, draft: DepartmentDraft): Safe {
   const general = s.pools.find((p) => p.id === null)!;
   const suggested = Math.max(0, Math.floor(Math.min(general.remainingEur / 2, 1) * 100) / 100);
   return html`
-    <header class="modal-head"><div><h2>Abteilung abstecken</h2><p class="modal-sub">${draft.w} × ${draft.d} Felder, ${RULES.departmentCost} Baupunkte</p></div>
+    <header class="modal-head"><div><h2>Abteilung abstecken</h2><p class="modal-sub">${draft.w} × ${draft.d} Felder</p></div>
       <button class="icon-btn" data-action="close-modal" aria-label="Schließen">×</button></header>
     <form class="modal-body panel-form" data-form="department">
       <label class="field"><span>Name</span><input name="name" maxlength="30" required autocomplete="off" placeholder="Zum Beispiel: Produkt" /></label>
@@ -1858,14 +1859,24 @@ export function noteModal(draft: NoteDraft): Safe {
 }
 
 /** Die Tafel: was Agenten vorschlagen und noch niemand bekommen hat. */
-function boardSection(s: Snapshot, noteId: string | null): Safe {
+/** Zu welcher Abteilung ein Zettel gehört: über den Auftrag des Vorschlags oder über die Person, die ihn angehängt hat. */
+function noteDepartment(company: Company, note: { mandateId: string | null; byAgentId: string | null }): string | null {
+  if (note.mandateId) return company.mandates.find((m) => m.id === note.mandateId)?.departmentId ?? null;
+  const agent = note.byAgentId ? company.agents.find((a) => a.id === note.byAgentId) : undefined;
+  return agent ? (departmentOfAgent(company, agent)?.id ?? null) : null;
+}
+
+function boardSection(s: Snapshot, noteId: string | null, departmentId: string | null = null): Safe {
   const { company } = s;
-  const notes = boardNotes({ board: company.board ?? [], mandates: company.mandates });
+  const department = departmentId ? company.departments.find((d) => d.id === departmentId) ?? null : null;
+  // Eine Tafel in einer Abteilung zeigt nur deren Zettel. Die Tafel im Büro zeigt alle.
+  const notes = boardNotes({ board: company.board ?? [], mandates: company.mandates }).filter((n) => !department || noteDepartment(company, n) === department.id);
   const later = (company.board ?? []).filter((n) => n.status === 'later');
   const selected = notes.find((n) => n.id === noteId) ?? null;
   const nameOf = (id: string | null) => (id ? company.agents.find((a) => a.id === id)?.name ?? 'Jemand' : 'Du');
   return html`<section class="tafel" data-key="tafel">
-    <div class="section-head"><h3>${scrumMaster(company) ? 'Tafel · Backlog' : 'Tafel'}</h3><span class="panel-sub">${notes.length === 1 ? '1 Zettel' : `${notes.length} Zettel`}</span></div>
+    <div class="section-head"><h3>${department ? `Tafel · ${department.name}` : scrumMaster(company) ? 'Tafel · Backlog' : 'Tafel'}</h3><span class="panel-sub">${notes.length === 1 ? '1 Zettel' : `${notes.length} Zettel`}</span></div>
+    ${department ? html`<button class="btn btn-small" data-action="board-all">Alle Zettel zeigen</button>` : null}
     <ul class="tafel-board">
       ${notes.map((note, index) => html`<li data-key="${note.id}"><button class="zettel zettel-${note.kind} ${note.id === noteId ? 'selected' : ''}" style="--tilt:${(index % 5) - 2}deg;background:${noteLook(company, note).color};color:${noteLook(company, note).ink}" data-action="select-note" data-id="${note.id}" aria-pressed="${note.id === noteId}" ${note.kind === 'vorschlag' ? '' : html`data-note="${note.id}"`}>
         <span class="zettel-title">${note.title}</span><small>${noteLook(company, note).role || nameOf(note.byAgentId)}${note.kind === 'vorschlag' ? ' · Vorschlag' : ''}</small>
@@ -1923,7 +1934,7 @@ function noteDetail(s: Snapshot, note: BoardNote): Safe {
   </div>`;
 }
 
-export function projectsPanel(s: Snapshot, orderId: string | null, mandateId: string | null, files: FileEntry[], folds: WorkspaceFolds = {}, noteId: string | null = null): Safe {
+export function projectsPanel(s: Snapshot, orderId: string | null, mandateId: string | null, files: FileEntry[], folds: WorkspaceFolds = {}, noteId: string | null = null, boardDepartment: string | null = null): Safe {
   const { company } = s;
   const anyone = company.agents.some((a) => a.hired);
   const selected = company.orders.find((o) => o.id === orderId) ?? null;
@@ -1933,7 +1944,7 @@ export function projectsPanel(s: Snapshot, orderId: string | null, mandateId: st
     <button class="btn ${company.orders.length ? '' : 'btn-primary'} btn-wide" data-action="open-order" ${anyone ? '' : 'disabled'}>Auftrag planen</button>
     ${!anyone ? html`<p class="hint">Stelle zuerst jemanden ein. Aufträge bearbeiten echte Mitarbeiter.</p>` : null}
     ${commandsSection(s)}
-    ${boardSection(s, noteId)}
+    ${boardSection(s, noteId, boardDepartment)}
     ${anyone || company.mandates.length ? mandatesSection(s, mandateId) : null}
     ${selected ? orderDetail(s, selected) : null}
     <ul class="order-list">
@@ -2024,7 +2035,7 @@ function reviewControls(s: Snapshot, order: Order): Safe {
           })}
         </ul>
         <div class="btn-row">
-          <button class="btn btn-primary" data-action="accept-order" data-id="${order.id}" ${order.files.length ? '' : 'disabled'}>Abnehmen, +${RULES.buildPointsPerAcceptedOrder} Baupunkte</button>
+          <button class="btn btn-primary" data-action="accept-order" data-id="${order.id}" ${order.files.length ? '' : 'disabled'}>Abnehmen</button>
           <button class="btn" data-action="reject-order" data-id="${order.id}">Ablehnen</button>
         </div>
         <form class="revise-form" data-form="revise" data-id="${order.id}">
@@ -2155,30 +2166,34 @@ function buildingSection(s: Snapshot): Safe {
   if (!limits) return html`<section class="detail" data-key="building"><h3>Anbau</h3><p class="hint">Anbauen und Stockwerke gehen nur am eigenen Neubau.</p></section>`;
   const house = buildingAt(company.town, company.town.siteId);
   const room = roomOf(company);
-  const can = (cost: number) => system.unlimitedBuild || company.buildPoints >= cost;
-  const row = (kind: string, title: string, note: string, cost: number, open: boolean) => html`<li data-key="${kind}">
-    <button class="catalog-row" data-action="expand" data-id="${kind}" ${open && can(cost) ? '' : 'disabled'}>
-      <span class="catalog-name"><strong>${title}</strong><small>${open ? note : 'Mehr gibt das Grundstück nicht her.'}</small></span><span class="num">${open ? cost : ''}</span>
+  // Was sich lohnt, hängt an der Zahl der Agenten, nicht an Punkten.
+  const team = teamSize(company);
+  const desks = company.placed.filter((p) => p.kind === 'desk').length;
+  const wider = system.unlimitedBuild || team >= desks;
+  const floorNeed = teamForFloor(house.floors);
+  const higher = system.unlimitedBuild || team >= floorNeed;
+  const row = (kind: string, title: string, note: string, ok: boolean, why: string, open: boolean) => html`<li data-key="${kind}">
+    <button class="catalog-row" data-action="expand" data-id="${kind}" ${open && ok ? '' : 'disabled'}>
+      <span class="catalog-name"><strong>${title}</strong><small>${!open ? 'Mehr gibt das Grundstück nicht her.' : ok ? note : why}</small></span>
     </button></li>`;
-  const nextFloor = floorCost(house.floors);
-  const shaftRow = (kind: 'stairs' | 'lift', title: string, note: string, cost: number, withFloor: boolean) => html`<li data-key="${kind}-${withFloor}">
-    <button class="catalog-row" data-action="build-shaft" data-id="${kind}" data-floor="${withFloor ? '1' : ''}" ${can(cost) ? '' : 'disabled'}>
-      <span class="catalog-name"><strong>${title}</strong><small>${note}</small></span><span class="num">${cost}</span>
+  const shaftRow = (kind: 'stairs' | 'lift', title: string, note: string, withFloor: boolean) => html`<li data-key="${kind}-${withFloor}">
+    <button class="catalog-row" data-action="build-shaft" data-id="${kind}" data-floor="${withFloor ? '1' : ''}" ${withFloor && !higher ? 'disabled' : ''}>
+      <span class="catalog-name"><strong>${title}</strong><small>${withFloor && !higher ? `Ab ${floorNeed} Agenten.` : note}</small></span>
     </button></li>`;
   return html`<section class="detail" data-key="building">
     <h3>Anbau</h3>
     <p class="hint">${room.w} × ${room.d} Felder, ${house.floors === 1 ? '1 Etage' : `${house.floors} Etagen`}. Möglich: ${room.w - house.w + limits.w} × ${room.d - house.d + limits.d} Felder, ${limits.floors} Etagen.</p>
     <ul class="catalog">
-      ${row('breiter', 'Breiter', 'Ein Feld mehr, auf jeder Etage.', EXTEND_COST, house.w < limits.w)}
-      ${row('tiefer', 'Tiefer', 'Ein Feld mehr, auf jeder Etage.', EXTEND_COST, house.d < limits.d)}
+      ${row('breiter', 'Breiter', 'Ein Feld mehr, auf jeder Etage.', wider, 'Erst wenn jeder Schreibtisch besetzt ist.', house.w < limits.w)}
+      ${row('tiefer', 'Tiefer', 'Ein Feld mehr, auf jeder Etage.', wider, 'Erst wenn jeder Schreibtisch besetzt ist.', house.d < limits.d)}
       ${house.shafts.length
-        ? html`${row('etage', 'Stockwerk', 'Eine Etage mehr.', nextFloor, house.floors < limits.floors)}
-          ${shaftRow('stairs', 'Weitere Treppe', 'Kürzere Wege. Steht auf jeder Etage.', SHAFT_COST.stairs, false)}
-          ${shaftRow('lift', 'Fahrstuhl', 'Kürzere Wege. Steht auf jeder Etage.', SHAFT_COST.lift, false)}`
+        ? html`${row('etage', 'Stockwerk', 'Eine Etage mehr.', higher, `Ab ${floorNeed} Agenten.`, house.floors < limits.floors)}
+          ${shaftRow('stairs', 'Weitere Treppe', 'Kürzere Wege. Steht auf jeder Etage.', false)}
+          ${shaftRow('lift', 'Fahrstuhl', 'Kürzere Wege. Steht auf jeder Etage.', false)}`
         : house.floors < limits.floors
-          ? html`${shaftRow('stairs', 'Stockwerk mit Treppe', 'Wähle den Platz für den Aufgang.', nextFloor + SHAFT_COST.stairs, true)}
-            ${shaftRow('lift', 'Stockwerk mit Fahrstuhl', 'Wähle den Platz für den Aufgang.', nextFloor + SHAFT_COST.lift, true)}`
-          : row('etage', 'Stockwerk', '', 0, false)}
+          ? html`${shaftRow('stairs', 'Stockwerk mit Treppe', 'Wähle den Platz für den Aufgang.', true)}
+            ${shaftRow('lift', 'Stockwerk mit Fahrstuhl', 'Wähle den Platz für den Aufgang.', true)}`
+          : row('etage', 'Stockwerk', '', false, '', false)}
     </ul>
     ${house.floors > 1 ? html`<p class="hint">Etage wechseln: <kbd>Bild auf</kbd>, <kbd>Bild ab</kbd> oder Klick auf die Treppe.</p>` : null}
   </section>`;
@@ -2190,7 +2205,7 @@ export interface RoomNaming {
   ok: boolean;
 }
 
-export function buildPanel(s: Snapshot, buildKind: string | null, moving: boolean, message: string, anchored: boolean, inventoryId: string | null = null, confirmDelete: string | null = null, atHead = true, room: RoomNaming | null = null): Safe {
+export function buildPanel(s: Snapshot, buildKind: string | null, moving: boolean, message: string, anchored: boolean, inventoryId: string | null = null, confirmDelete: string | null = null, atHead = true, room: RoomNaming | null = null, wallsLow = false): Safe {
   const fromInventory = Boolean(inventoryId);
   const deletable = moving || fromInventory;
   const { company } = s;
@@ -2200,7 +2215,6 @@ export function buildPanel(s: Snapshot, buildKind: string | null, moving: boolea
   const rotates = info ? !(shaft && moving) : false;
   return html`
     <div class="panel-head"><h2>Büro ausbauen</h2></div>
-    <div class="points"><span class="points-icon" aria-hidden="true"></span><span>Baupunkte:</span><strong class="num">${s.system.unlimitedBuild ? '∞' : company.buildPoints}</strong>${s.system.unlimitedBuild ? html`<small class="hint">Schalter zum Ausprobieren, Bauen kostet nichts</small>` : null}</div>
     ${zone ? html`
       <section class="detail">
         <h3>Abteilung abstecken</h3>
@@ -2211,7 +2225,7 @@ export function buildPanel(s: Snapshot, buildKind: string | null, moving: boolea
     ${info ? html`
       <section class="detail">
         <h3>${moving ? `${info.title} umstellen` : info.title}</h3>
-        <p class="hint">${shaft && moving ? `Steht auf jeder Etage und bleibt an seinem Platz. Entfernen geht, solange ein zweiter Aufgang steht.` : shaft ? `${info.size}, auf jeder Etage an derselben Stelle. Das gelbe Feld davor bleibt frei. Fahre mit der Maus auf ein Feld im Büro.` : `${info.size}. ${moving ? 'Umstellen ist kostenlos.' : fromInventory ? 'Aus dem Inventar, kostenlos.' : `Kosten: ${info.cost} Baupunkte.`} Fahre mit der Maus auf ein Feld im Büro.${rotates ? '' : ' Dieser Gegenstand lässt sich nicht drehen.'}`}${info.kind === 'meeting' ? ' Beim Besprechungsraum legt das fest, wo die Tür sitzt.' : ''}</p>
+        <p class="hint">${shaft && moving ? `Steht auf jeder Etage und bleibt an seinem Platz. Entfernen geht, solange ein zweiter Aufgang steht.` : shaft ? `${info.size}, auf jeder Etage an derselben Stelle. Das gelbe Feld davor bleibt frei. Fahre mit der Maus auf ein Feld im Büro.` : `${info.size}. ${moving ? '' : fromInventory ? 'Aus dem Inventar. ' : ''}Fahre mit der Maus auf ein Feld im Büro.${rotates ? '' : ' Dieser Gegenstand lässt sich nicht drehen.'}`}${info.kind === 'meeting' ? ' Beim Besprechungsraum legt das fest, wo die Tür sitzt.' : ''}</p>
         ${message ? html`<p class="form-error">${message}</p>` : null}
         ${confirmDelete && deletable ? html`<p class="form-error" role="alert">Wirklich löschen? Noch einmal <kbd>Entf</kbd> drückt es endgültig weg, ohne Erstattung.</p>` : null}
         <ul class="key-legend">
@@ -2224,25 +2238,25 @@ export function buildPanel(s: Snapshot, buildKind: string | null, moving: boolea
       </section>` : zone ? null : html`<p class="hint">Wähle ein Möbelstück oder klicke einen Gegenstand im Büro an, auch alles, was schon im Raum stand. Dann geht alles über die Tastatur. Ein Rechtsklick dreht direkt an Ort und Stelle.</p>`}
     ${(company.inventory ?? []).length ? html`<section class="detail" data-key="inventory">
       <h3>Inventar</h3>
-      <ul class="catalog">
+      <ul class="catalog catalog-grid">
         ${company.inventory.map((stored) => html`<li data-key="${stored.id}">
-          <button class="catalog-row ${inventoryId === stored.id ? 'selected' : ''}" data-action="inventory-pick" data-id="${stored.id}">
-            <span class="catalog-name"><strong>${furnitureByKind(stored.kind).title}</strong><small>${furnitureByKind(stored.kind).size}</small></span><span class="num">frei</span>
+          <button class="catalog-tile ${inventoryId === stored.id ? 'selected' : ''}" data-action="inventory-pick" data-id="${stored.id}" title="${furnitureByKind(stored.kind).size}">
+            <img src="${itemIcon(stored.kind)}" alt="" /><span class="tile-name">${furnitureByKind(stored.kind).title}</span>
           </button></li>`)}
       </ul>
-      <p class="hint">Anklicken und neu platzieren ist kostenlos. Löschen gibt keine Baupunkte zurück.</p>
+      <p class="hint">Anklicken und neu platzieren.</p>
     </section>` : null}
-    <ul class="catalog">
+    <ul class="catalog catalog-grid">
       ${FURNITURE.map((f) => html`<li data-key="${f.kind}">
-        <button class="catalog-row ${f.kind === buildKind && !moving && !fromInventory ? 'selected' : ''}" data-action="build-pick" data-id="${f.kind}" ${(!s.system.unlimitedBuild && company.buildPoints < f.cost) || (f.kind === 'ceoDesk' && [...company.placed, ...(company.inventory ?? [])].some((p) => p.kind === 'ceoDesk')) ? 'disabled' : ''}>
-          <span class="catalog-name"><strong>${f.title}</strong><small>${f.blurb}</small></span><span class="num">${f.cost}</span>
+        <button class="catalog-tile ${f.kind === buildKind && !moving && !fromInventory ? 'selected' : ''}" data-action="build-pick" data-id="${f.kind}" title="${f.blurb}" ${(f.kind === 'ceoDesk' && [...company.placed, ...(company.inventory ?? [])].some((p) => p.kind === 'ceoDesk')) ? 'disabled' : ''}>
+          <img src="${itemIcon(f.kind)}" alt="" /><span class="tile-name">${f.title}</span>
         </button></li>`)}
       <li data-key="department">
-        <button class="catalog-row ${zone ? 'selected' : ''}" data-action="build-pick" data-id="department" ${!s.system.unlimitedBuild && company.buildPoints < RULES.departmentCost ? 'disabled' : ''}>
-          <span class="catalog-name"><strong>Abteilung</strong><small>Ein Bereich mit eigenem Team, Budget und Wissen.</small></span><span class="num">${RULES.departmentCost}</span>
+        <button class="catalog-tile ${zone ? 'selected' : ''}" data-action="build-pick" data-id="department" title="Ein Bereich mit eigenem Team, Budget und Wissen.">
+          <img src="${itemIcon('department')}" alt="" /><span class="tile-name">Abteilung</span>
         </button></li>
     </ul>
-    ${roomSection(s, room)}
+    ${roomSection(s, room, wallsLow)}
     ${atHead ? buildingSection(s) : html`<p class="hint" data-key="anbau-hinweis">Anbauen geht vorerst nur am Firmensitz.</p>`}
     ${company.departments.length ? html`<section class="detail" data-key="zones">
       <h3>Abteilungen</h3>
@@ -2253,20 +2267,21 @@ export function buildPanel(s: Snapshot, buildKind: string | null, moving: boolea
       <p class="hint">Rücke einen Schreibtisch in einen Bereich hinein oder heraus, um jemanden umzusetzen.</p>
     </section>` : null}
     <p class="hint">Mehr Platz: Läden und Grundstücke gibt es draußen in der Stadt.</p>
-    <p class="hint hint-note">Baupunkte sind keine Euro. Du verdienst sie nur, wenn du ein Ergebnis abnimmst, nie durch Verbrauch.</p>`;
+    `;
 }
 
 /** Räume aus Wänden und Türen bekommen hier Zweck und Namen. */
-function roomSection(s: Snapshot, room: RoomNaming | null): Safe {
+function roomSection(s: Snapshot, room: RoomNaming | null, wallsLow = false): Safe {
   const zones = s.company.zones ?? [];
   const title = (kind: string) => ZONE_KINDS.find((z) => z.kind === kind)?.title ?? kind;
   const form = room?.target
     ? html`<div class="room-form" data-key="room-form">
         <label class="field"><span>Zweck</span><select name="zoneKind">${ZONE_KINDS.map((z) => html`<option value="${z.kind}" ${room.zone?.kind === z.kind ? 'selected' : ''}>${z.title}</option>`)}</select></label>
         <label class="field"><span>Name</span><input name="zoneName" maxlength="40" autocomplete="off" value="${room.zone?.name ?? ''}" /></label>
-        ${room.ok ? null : html`<p class="hint">Das ist kein eigener Raum. Trenne ihn mit Wänden und einer Tür ab.</p>`}
+        <label class="field"><span>Boden</span><select name="zoneFloor"><option value="">Wie im Haus</option>${FLOOR_STYLES.map((f) => html`<option value="${f.style}" ${room.zone?.floorStyle === f.style ? 'selected' : ''}>${f.title}</option>`)}</select></label>
+        ${room.ok ? null : html`<p class="hint">Dieser Bereich ist nicht abgetrennt. Das geht nur als Lobby.</p>`}
         <p class="hint">Ein Besprechungsraum braucht einen Besprechungstisch mit einem freien Feld an jeder Seite.</p>
-        <span class="btn-row"><button class="btn btn-small" data-action="room-save" ${room.ok ? '' : 'disabled'}>Speichern</button>
+        <span class="btn-row"><button class="btn btn-small" data-action="room-save">Speichern</button>
         <button class="btn btn-small" data-action="room-cancel">Abbrechen</button></span>
       </div>`
     : room
@@ -2274,6 +2289,7 @@ function roomSection(s: Snapshot, room: RoomNaming | null): Safe {
       : html`<button class="btn btn-small" data-action="room-mode">Raum benennen</button>`;
   return html`<section class="detail" data-key="rooms">
     <h3>Räume</h3>
+    <button class="btn btn-small" data-action="toggle-walls">${wallsLow ? 'Wände hochschalten' : 'Wände herunterschalten'}</button>
     ${form}
     ${zones.length ? html`<ul class="dept-list">${zones.map((z) => html`<li data-key="${z.id}">
       <span><span class="dept-dot" style="background:${ZONE_COLORS[z.kind]}"></span> ${z.name}, ${title(z.kind)}${floorOf(z) ? `, ${floorName(floorOf(z))}` : ''}</span>
@@ -2368,32 +2384,35 @@ export function townCard(s: Snapshot, parcel: Parcel | null): Safe | null {
   // Ins eigene Haus führt die Tür. Einen Dialog braucht es nur, wenn es hier noch etwas zu entscheiden gibt.
   const held = baseFloorOf(company, parcel.id) !== null;
   if (held && parcel.kind !== 'home') return null;
-  const can = (cost: number) => system.unlimitedBuild || company.buildPoints >= cost;
+  // Ob sich ein Ort lohnt, hängt an der Zahl der Agenten.
+  const team = teamSize(company);
+  const need = teamFor(parcel.locationId);
+  const enough = system.unlimitedBuild || team >= need;
   const room = parcel.locationId ? roomAt(parcel.locationId, buildingAt(town, parcel.id)) : null;
   const size = room ? `${room.w} × ${room.d} Felder` : '';
-  const action = (kind: string, label: string, cost: number, primary = true, locationId?: string) => html`<button class="btn btn-small ${primary ? 'btn-primary' : ''}" data-action="town-action" data-town="${kind}" data-id="${parcel.id}" ${locationId ? html`data-location="${locationId}"` : ''} ${can(cost) ? '' : 'disabled'}>${label}</button>`;
+  const action = (kind: string, label: string, ok: boolean, primary = true, locationId?: string) => html`<button class="btn btn-small ${primary ? 'btn-primary' : ''}" data-action="town-action" data-town="${kind}" data-id="${parcel.id}" ${locationId ? html`data-location="${locationId}"` : ''} ${ok ? '' : 'disabled'}>${label}</button>`;
   let facts: Safe | null = null;
   let buttons: Safe | null = null;
   if (parcel.kind === 'home') {
     const rooms = HOME_ROOMS.filter((id) => id !== company.locationId);
-    buttons = html`${rooms.map((id) => action('move', `In ${id === 'garage' ? 'die Garage' : 'das Kinderzimmer'} ziehen`, 0, !here, id))}`;
-    facts = here ? html`<p class="hint">Hier sitzt deine Firma: ${locationById(company.locationId).title}.</p>` : html`<p class="hint">Kostenlos.</p>`;
+    buttons = html`${rooms.map((id) => action('move', `In ${id === 'garage' ? 'die Garage' : 'das Kinderzimmer'} ziehen`, true, !here, id))}`;
+    facts = here ? html`<p class="hint">Hier sitzt deine Firma: ${locationById(company.locationId).title}.</p>` : html`<p class="hint">Für den Anfang, mit einem oder zwei Agenten.</p>`;
   } else if (parcel.kind === 'vacant') {
     const rented = town.rented.includes(parcel.id);
-    facts = html`<p class="hint">${size}.${rented ? ' Du hast den Mietvertrag. Die Tür führt hinein, ohne dass die Firma umzieht.' : html` Miete: <span class="num">${parcel.price}</span> Baupunkte.`}</p>`;
-    buttons = rented ? action('move', 'Firmensitz hierher verlegen', 0, false) : action('rent', `Anmieten für ${parcel.price} Baupunkte`, parcel.price ?? 0);
+    facts = html`<p class="hint">${size}.${rented ? ' Du hast den Mietvertrag. Die Tür führt hinein, ohne dass die Firma umzieht.' : ` Lohnt sich ab ${need} Agenten.`}</p>`;
+    buttons = rented ? action('move', 'Firmensitz hierher verlegen', enough, false) : action('rent', 'Anmieten', enough);
   } else if (parcel.kind === 'lot') {
     const owned = town.owned.includes(parcel.id);
     const built = town.built.includes(parcel.id);
-    facts = html`<p class="hint">${built ? `Dein Neubau: ${size}. Die Tür führt hinein, ohne dass die Firma umzieht.` : owned ? `Dein Grundstück. Bau: ${size}, ${parcel.buildCost} Baupunkte.` : `Kaufpreis: ${parcel.price} Baupunkte. Später möglich: Neubau mit ${size} für ${parcel.buildCost} Baupunkte.`}</p>`;
-    buttons = built ? action('move', 'Firmensitz hierher verlegen', 0, false) : owned ? action('build', `Bauen für ${parcel.buildCost} Baupunkte`, parcel.buildCost ?? 0) : action('buy', `Kaufen für ${parcel.price} Baupunkte`, parcel.price ?? 0);
+    facts = html`<p class="hint">${built ? `Dein Neubau: ${size}. Die Tür führt hinein, ohne dass die Firma umzieht.` : owned ? `Dein Grundstück. Neubau: ${size}.` : `Später möglich: Neubau mit ${size}. Lohnt sich ab ${need} Agenten.`}</p>`;
+    buttons = built ? action('move', 'Firmensitz hierher verlegen', enough, false) : owned ? action('build', 'Bauen', enough) : action('buy', 'Kaufen', enough);
   }
   return html`<section class="town-card" aria-live="polite" data-key="${parcel.id}">
     <h2>${parcel.name}</h2>
     <small>${parcel.street}${parcel.kind === 'shop' ? ', geöffnet' : ''}</small>
     ${facts}
     ${buttons ? html`<div class="btn-row">${buttons}</div>` : null}
-    ${parcel.kind === 'vacant' || parcel.kind === 'lot' ? html`<p class="hint">Bezahlt wird in Baupunkten, nicht aus dem KI-Budget. Du hast <span class="num">${system.unlimitedBuild ? '∞' : company.buildPoints}</span>.</p>` : null}
+    ${parcel.kind === 'vacant' || parcel.kind === 'lot' ? html`<p class="hint">Deine Firma hat <span class="num">${team}</span> ${team === 1 ? 'Agent' : 'Agenten'}.</p>` : null}
   </section>`;
 }
 

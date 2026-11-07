@@ -2,10 +2,10 @@ import type { ModelInfo } from './catalog.ts';
 // Datenmodell einer Firma. Der Server ist die einzige Quelle der Wahrheit;
 // der Client zeichnet nur, was hier steht.
 
-export type LocationId = 'kinderzimmer' | 'garage' | 'eckladen' | 'buero' | 'kino' | 'neubau-klein' | 'neubau-mittel' | 'neubau-gross';
+export type LocationId = 'kinderzimmer' | 'garage' | 'eckladen' | 'coworking' | 'buero' | 'fabrik' | 'kino' | 'neubau-klein' | 'neubau-mittel' | 'neubau-gross';
 /** Was schon im Raum steht, wenn man einzieht. Es lässt sich verschieben, aber nicht kaufen. */
 export type PropKind = 'stairs' | 'lift' | 'bed' | 'toybox' | 'desk-kid' | 'workbench' | 'boxes' | 'tires' | 'lockers' | 'sofa';
-export type FurnitureKind = 'ceoDesk' | 'desk' | 'shelf' | 'coffee' | 'plant' | 'meeting' | 'wall' | 'door' | 'table' | PropKind;
+export type FurnitureKind = 'ceoDesk' | 'desk' | 'shelf' | 'coffee' | 'plant' | 'meeting' | 'wall' | 'door' | 'window' | 'glass' | 'table' | 'board' | 'arcade' | 'beanbag' | PropKind;
 
 /** Ein Agent fragt einen Kollegen um Hilfe. Das sind zwei echte Läufe mit echtem Verbrauch, kein Bild. */
 export interface HelpRequest {
@@ -482,12 +482,16 @@ export interface Notice {
 
 /** Ein Bereich auf dem Boden. Wessen Schreibtischplatz darin liegt, gehört zur Abteilung: Umorganisieren heißt Möbel rücken. */
 /** Was in einem Raum geschieht. Ein Raum entsteht aus Wänden und Türen, die Zone gibt ihm Zweck und Namen. */
-export type ZoneKind = 'meeting' | 'break' | 'other';
+export type ZoneKind = 'meeting' | 'break' | 'gaming' | 'lobby' | 'ceo' | 'other';
+
+export type FloorStyle = 'holz' | 'teppich' | 'fliesen' | 'beton';
 
 export interface Zone {
   id: string;
   kind: ZoneKind;
   name: string;
+  /** Eigener Bodenbelag des Raums. Fehlt er, bleibt der Boden des Hauses. */
+  floorStyle?: FloorStyle;
   /** Die Etage. Fehlt sie, liegt die Zone im Erdgeschoss. */
   floor?: number;
   /** Ein Feld im Raum. Der Raum selbst ergibt sich aus den Wänden drumherum. */
@@ -729,7 +733,7 @@ export interface SystemInfo {
   plan: PlanStatus | null;
   /** Eigener Port für Agenten-Ergebnisse, damit sie nicht auf dem Ursprung des Spiels laufen. */
   artifactPort: number;
-  /** Schalter zum Ausprobieren: Bauen kostet keine Baupunkte. */
+  /** Schalter zum Ausprobieren: Räume und Anbauten ohne Mindestgröße des Teams. */
   unlimitedBuild: boolean;
 }
 

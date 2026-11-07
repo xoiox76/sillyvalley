@@ -11,11 +11,11 @@ import { noteTaker, wallNotes, type BoardNote } from '../../shared/board.ts';
 import {
   MEETING_SIZE, blockedEdges, blockedSet, checkDepartment, checkPlacement, findPath, footprint, inBounds, meetingDoor, occupiedTiles, seatOf, standingTile,
   type Rect, type Seat, type Tile,
-  wallSides, isEdgeKind,
+  wallSides, isEdgeKind, onBackWall,
 } from '../../shared/layout.ts';
-import { ZONE_COLORS, roomSeats, zoneTiles } from '../../shared/zones.ts';
-import type { Agent, Company, Department, FurnitureKind, HelpRequest, PropKind, LiveKind, Meeting, PlacedItem, PlanStatus, Rotation, Shaft } from '../../shared/types.ts';
-import { doorSprite, wallSprite, stairSprite, type StairMode, ROOM_HEIGHT, drawLiftDoors, drawLiftFrame, liftShell, type LiftFace, chairBack, chairBase, ceoTable, deskTable, drawScreen, furnitureSprite, glassSegment, meetingFloor, meetingTable, propSprite, type Sprite } from './art.ts';
+import { LOUNGE_SPOTS, ZONE_COLORS, roomSeats, zoneTiles } from '../../shared/zones.ts';
+import type { Agent, Company, Department, FloorStyle, FurnitureKind, HelpRequest, PropKind, LiveKind, Meeting, PlacedItem, PlanStatus, Rotation, Shaft, ZoneKind } from '../../shared/types.ts';
+import { arcadeSprite, beanbagSprite, edgeSprite, boardSprite, stairSprite, type StairMode, ROOM_HEIGHT, drawLiftDoors, drawLiftFrame, liftShell, type LiftFace, chairBack, chairBase, ceoTable, deskTable, drawScreen, furnitureSprite, glassSegment, meetingFloor, meetingTable, propSprite, type Sprite } from './art.ts';
 import { characterSprite, type Pose, type View } from './characters.ts';
 import { Pen, fillPoly, layer, line, rect, type Ctx, type Layer } from './pixel.ts';
 import { buildRoom, waterPattern, type Room, WALL_H } from './room.ts';
@@ -24,7 +24,7 @@ const MOBILE_STATES: LiveKind[] = ['idle', 'done', 'stopped', 'handoff', 'meetin
 const WORKING: LiveKind[] = ['starting', 'thinking', 'answering', 'reading', 'writing', 'searching', 'waiting'];
 const WALK_SPEED = 2.4;
 /** Sichtbare Höhe in Pixeln, damit ein Klick auf den oberen Teil das Möbelstück trifft. */
-const ITEM_HEIGHT: Record<FurnitureKind, number> = { wall: 50, door: 50, table: 24, desk: 30, shelf: 42, coffee: 28, plant: 22, meeting: 36, ceoDesk: 30, stairs: 40, lift: 46, bed: 24, toybox: 18, 'desk-kid': 26, workbench: 28, boxes: 26, tires: 16, lockers: 42, sofa: 22 };
+const ITEM_HEIGHT: Record<FurnitureKind, number> = { board: 40, window: 50, glass: 50, arcade: 42, beanbag: 15, wall: 50, door: 50, table: 24, desk: 30, shelf: 42, coffee: 28, plant: 22, meeting: 36, ceoDesk: 30, stairs: 40, lift: 46, bed: 24, toybox: 18, 'desk-kid': 26, workbench: 28, boxes: 26, tires: 16, lockers: 42, sofa: 22 };
 
 const CEO_KEYS: Record<string, Tile> = {
   ArrowUp: { i: 0, j: -1 }, w: { i: 0, j: -1 }, W: { i: 0, j: -1 },
@@ -295,6 +295,13 @@ export class World {
     this.active = active;
   }
 
+  /** Wie bei einem Bauspiel üblich: Gezogene Wände lassen sich herunterschalten, damit man in die Räume sieht. */
+  private wallsLow = false;
+
+  setWallsLow(low: boolean): void {
+    this.wallsLow = low;
+  }
+
   setGhost(ghost: Ghost | null): void {
     this.ghost = ghost;
   }
@@ -327,11 +334,25 @@ export class World {
     this.placeCeo();
   }
 
-  /** Du kommst durch die Tür oder, oben, über den Aufgang. */
+  /** Ein zufälliges freies Feld in einer Zone dieser Art auf einer Etage. */
+  private freeTileIn(kind: ZoneKind, floor: number): Tile | null {
+    const company = this.company;
+    if (!company) return null;
+    const zone = (company.zones ?? []).find((z) => z.kind === kind && floorOf(z) === floor);
+    if (!zone) return null;
+    const blocked = blockedSet(roomOf(company, floor), itemsOnFloor(company.placed, floor));
+    const free = [...zoneTiles(company, zone)].filter((k) => !blocked.has(k));
+    if (!free.length) return null;
+    const [i, j] = free[Math.floor(Math.random() * free.length)].split(',').map(Number);
+    return { i, j };
+  }
+
+  /** Du kommst durch die Tür oder, oben, über den Aufgang. Gibt es ein Chefbüro, beginnst du dort. */
   placeCeo(): void {
     const loc = roomOf(this.company!, this.viewFloor);
-    this.ceo.i = loc.door.i + 0.5;
-    this.ceo.j = loc.door.j + 0.5;
+    const office = this.freeTileIn('ceo', this.viewFloor);
+    this.ceo.i = (office ?? loc.door).i + 0.5;
+    this.ceo.j = (office ?? loc.door).j + 0.5;
     this.ceo.path = [];
     this.ceo.key = null;
     this.ceo.placed = true;
@@ -594,6 +615,12 @@ export class World {
     let i = loc.door.i + 0.5;
     let j = loc.door.j + 0.5;
     let floor = 0;
+    // Wer neu ist, kommt in der Lobby an, wenn es eine gibt.
+    const lobby = fresh ? this.freeTileIn('lobby', 0) : null;
+    if (lobby) {
+      i = lobby.i + 0.5;
+      j = lobby.j + 0.5;
+    }
     const inMeeting = fresh ? null : this.meetingSeat(agent);
     if (inMeeting) {
       i = inMeeting.i;
@@ -707,7 +734,10 @@ export class World {
     const loc = this.location();
     const [a, b] = wallSides(edge);
     const inside = (t: Tile) => t.i >= 0 && t.j >= 0 && t.i < loc.w && t.j < loc.d;
-    return inside(a) && inside(b) ? edge : null;
+    if (inside(a) && inside(b)) return edge;
+    // Fenster gehen auch in die hinteren Außenwände.
+    const kind = this.ghost?.kind ?? '';
+    return onBackWall(loc, { kind: kind as FurnitureKind, ...edge }) ? edge : null;
   }
 
   /**
@@ -1426,6 +1456,23 @@ export class World {
     const loc = this.location();
     const company = this.company!;
     const random = Math.random();
+    // Gibt es einen Sozialbereich oder Gaming-Raum, gehen freie Agenten meist dorthin: an Kaffee, Sofa oder Automat.
+    const lounges = (company.zones ?? []).filter((z) => floorOf(z) === actor.floor && LOUNGE_SPOTS[z.kind]);
+    if (lounges.length && random < 0.7) {
+      const zone = lounges[Math.floor(Math.random() * lounges.length)];
+      const tiles = zoneTiles(company, zone);
+      const kinds = LOUNGE_SPOTS[zone.kind]!;
+      const spots = company.placed.filter((p) => floorOf(p) === actor.floor && kinds.includes(p.kind) && tiles.has(`${p.i},${p.j}`)).sort(() => Math.random() - 0.5);
+      for (const spot of spots) {
+        const near = standingTile(loc, this.blocked, spot);
+        if (near && tiles.has(`${near.i},${near.j}`)) return near;
+      }
+      const free = [...tiles].filter((k) => !this.blocked.has(k));
+      if (free.length) {
+        const [i, j] = free[Math.floor(Math.random() * free.length)].split(',').map(Number);
+        return { i, j };
+      }
+    }
     const coffee = company.placed.find((p) => p.kind === 'coffee' && floorOf(p) === actor.floor);
     if (coffee && random < 0.45) {
       const near = standingTile(loc, this.blocked, coffee);
@@ -1682,9 +1729,18 @@ export class World {
       items.push({ depth: item.i + 0.5 + item.j + 1, draw: () => this.drawSprite(ctx, stairSprite(mode), at()) });
       return;
     }
-    if (item.kind === 'wall' || item.kind === 'door') {
-      const sprite = item.kind === 'wall' ? wallSprite(item.rot) : doorSprite(item.rot);
+    if (isEdgeKind(item.kind)) {
+      const sprite = edgeSprite(item.kind, item.rot, this.wallsLow);
       items.push({ depth: item.i + item.j + 0.5, draw: () => this.drawSprite(ctx, sprite, at()) });
+      return;
+    }
+    if (item.kind === 'arcade' || item.kind === 'beanbag') {
+      const sprite = item.kind === 'arcade' ? arcadeSprite() : beanbagSprite();
+      items.push({ depth: item.i + item.j + 1, draw: () => this.drawSprite(ctx, sprite, at()) });
+      return;
+    }
+    if (item.kind === 'board') {
+      items.push({ depth: item.i + item.j + 1, draw: () => this.drawSprite(ctx, boardSprite(item.rot), at()) });
       return;
     }
     if (item.kind === 'table') {
@@ -1836,7 +1892,8 @@ export class World {
     const zones = (company.zones ?? []).filter((z) => floorOf(z) === this.viewFloor);
     for (const zone of zones) {
       const tiles = [...zoneTiles(company, zone)].map((k) => k.split(',').map(Number) as [number, number]);
-      this.tintTiles(ctx, pen, tiles, ZONE_COLORS[zone.kind], 0.14);
+      if (zone.floorStyle) this.paintFloor(ctx, pen, tiles, zone.floorStyle);
+      this.tintTiles(ctx, pen, tiles, ZONE_COLORS[zone.kind], zone.floorStyle ? 0.06 : 0.14);
       const top = tiles.reduce((a, b) => (b[0] + b[1] < a[0] + a[1] ? b : a), tiles[0]);
       const [x, y] = pen.pt(top[0] + 0.5, top[1] + 0.5);
       let el = this.roomZoneLabels.get(zone.id);
@@ -1855,6 +1912,24 @@ export class World {
       if (zones.some((z) => z.id === id)) continue;
       el.remove();
       this.roomZoneLabels.delete(id);
+    }
+  }
+
+  /** Bodenbelag eines Raums, Feld für Feld. Muster bleiben grob, damit sie zum Pixelbild passen. */
+  private paintFloor(ctx: Ctx, pen: Pen, tiles: [number, number][], style: FloorStyle): void {
+    const quad = (i: number, j: number, w: number, d: number, color: string) => fillPoly(ctx, [pen.pt(i, j), pen.pt(i + w, j), pen.pt(i + w, j + d), pen.pt(i, j + d)], color);
+    for (const [i, j] of tiles) {
+      if (style === 'holz') {
+        for (let n = 0; n < 4; n++) quad(i + n / 4, j, 0.25, 1, (i * 4 + n + j) % 3 === 0 ? '#8a6443' : (i * 4 + n) % 2 ? '#9a7350' : '#a57d58');
+      } else if (style === 'teppich') {
+        quad(i, j, 1, 1, '#4f6f8f');
+        if ((i + j) % 2 === 0) quad(i + 0.35, j + 0.35, 0.3, 0.3, '#5c7da0');
+      } else if (style === 'fliesen') {
+        quad(i, j, 1, 1, '#b9c2c8');
+        quad(i + 0.04, j + 0.04, 0.92, 0.92, (i + j) % 2 ? '#d6dde2' : '#e6ebef');
+      } else {
+        quad(i, j, 1, 1, (i * 7 + j * 3) % 5 === 0 ? '#7a7d80' : '#85888b');
+      }
     }
   }
 
@@ -1886,7 +1961,11 @@ export class World {
     fillPoly(ctx, [pen.pt(ghost.i, ghost.j), pen.pt(ghost.i + size.w, ghost.j), pen.pt(ghost.i + size.w, ghost.j + size.d), pen.pt(ghost.i, ghost.j + size.d)], color);
     ctx.globalAlpha = 0.72 + (tick % 6 < 3 ? 0.08 : 0);
     const at = pen.pt(ghost.i, ghost.j);
-    if (ghost.kind === 'table') {
+    if (ghost.kind === 'arcade' || ghost.kind === 'beanbag') {
+      this.drawSprite(ctx, ghost.kind === 'arcade' ? arcadeSprite() : beanbagSprite(), at);
+    } else if (ghost.kind === 'board') {
+      this.drawSprite(ctx, boardSprite(ghost.rot), at);
+    } else if (ghost.kind === 'table') {
       this.drawSprite(ctx, meetingTable(), pen.pt(ghost.i - 1, ghost.j - 1));
     } else if (isEdgeKind(ghost.kind)) {
       // Jede Kante des Zugs leuchtet. Liegt schon eine Wand dort, zeigt Bernstein: Ein Klick reißt sie ab.
@@ -1899,7 +1978,7 @@ export class World {
           ? [pen.pt(i, j - 0.1), pen.pt(i + 1, j - 0.1), pen.pt(i + 1, j + 0.1), pen.pt(i, j + 0.1)]
           : [pen.pt(i - 0.1, j), pen.pt(i - 0.1, j + 1), pen.pt(i + 0.1, j + 1), pen.pt(i + 0.1, j)];
         fillPoly(ctx, strip, removing ? '#f8b62d' : color);
-        if (!removing) this.drawSprite(ctx, ghost.kind === 'door' ? doorSprite(seg.rot) : wallSprite(seg.rot), pen.pt(i, j));
+        if (!removing) this.drawSprite(ctx, edgeSprite(ghost.kind, seg.rot), pen.pt(i, j));
       }
     } else if (ghost.kind === 'meeting') {
       const parts: { depth: number; draw: () => void }[] = [];

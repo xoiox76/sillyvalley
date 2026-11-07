@@ -10,10 +10,10 @@ import path from 'node:path';
 import { DEFAULT_CEO, LOOK_OPTIONS, DEPARTMENT_COLORS, FURNITURE, LOCATIONS, isProp, staffOf, MODELS, ROLES, RULES, SKILLS, commandRisks, furnitureByKind, locationById, modelById, roleById, skillById } from '../shared/catalog.ts';
 import type { Settings } from './settings.ts';
 import { openSprint, scrumMaster, sprintCommitted, sprintRows } from '../shared/scrum.ts';
-import { checkDepartment, checkPlacement, deskDepartment, inBounds } from '../shared/layout.ts';
-import { ZONE_KINDS, isSeparateRoom, meetingRooms, zoneAt } from '../shared/zones.ts';
-import { SITE_STEP, baseFloorOf, siteAt, storeyOf, EXTEND_COST, SHAFT_COST, buildLimits, buildingAt, checkShaft, floorCost, floorOf, isShaft, itemsOnFloor, roomAt, roomOf, shaftLanding } from '../shared/building.ts';
-import { CITIES, HOME_ROOMS, parcelById, parcelOfLocation, placeById, startTown } from '../shared/town.ts';
+import { checkDepartment, checkPlacement, deskDepartment, inBounds, isEdgeKind } from '../shared/layout.ts';
+import { FLOOR_STYLES, ZONE_KINDS, isSeparateRoom, meetingRooms, zoneAt } from '../shared/zones.ts';
+import { SITE_STEP, baseFloorOf, siteAt, storeyOf, buildLimits, buildingAt, checkShaft, floorOf, isShaft, itemsOnFloor, roomAt, roomOf, shaftLanding } from '../shared/building.ts';
+import { CITIES, HOME_ROOMS, parcelById, parcelOfLocation, placeById, startTown, teamFor, teamForFloor, teamSize } from '../shared/town.ts';
 import type {
   CompanyRepo, OrderGit,
   Sprint,
@@ -548,7 +548,6 @@ export class Engine {
     const name = input.name?.trim();
     if (!name) throw new GameError('Gib der Abteilung einen Namen.');
     if (company.departments.some((d) => d.name.toLowerCase() === name.toLowerCase())) throw new GameError(`Die Abteilung "${name}" gibt es schon.`);
-    this.assertBuildPoints(company, RULES.departmentCost);
     const departmentFloor = this.checkFloor(company, input.floor);
     const check = checkDepartment(roomOf(company, departmentFloor), company.departments.filter((d) => floorOf(d) === departmentFloor), input);
     if (!check.ok) throw new GameError(check.reason);
@@ -567,7 +566,6 @@ export class Engine {
     fs.mkdirSync(path.join(workspace, dir), { recursive: true });
     fs.writeFileSync(path.join(workspace, dir, 'abteilung.md'), `# Abteilung ${name}\n\nWissen dieser Abteilung. Was hier liegt, lesen ihre Mitarbeiter bei jedem Auftrag.\n`);
     company.departments.push(department);
-    this.spendBuildPoints(company, RULES.departmentCost);
     this.touch(company);
     return department;
   }
@@ -605,17 +603,20 @@ export class Engine {
     this.touch(company);
   }
 
-  /** Auflösen gibt das Budget zurück. Die Wissensablage bleibt, Baupunkte kommen nicht zurück. */
+  /** Auflösen gibt das Budget zurück. Die Wissensablage bleibt. */
   /** Gibt einem Raum aus Wänden und Türen Zweck und Namen. Hat er schon eine Zone, wird sie geändert. */
-  setZone(companyId: string, input: { floor?: number; i: number; j: number; kind: ZoneKind; name: string }): Zone {
+  setZone(companyId: string, input: { floor?: number; i: number; j: number; kind: ZoneKind; name: string; floorStyle?: string | null }): Zone {
     const company = this.require(companyId);
     const floor = this.checkFloor(company, input.floor);
     if (!ZONE_KINDS.some((z) => z.kind === input.kind)) throw new GameError('Diese Zonenart gibt es nicht.');
     const name = String(input.name ?? '').trim().slice(0, 40);
     if (!name) throw new GameError('Gib der Zone einen Namen.');
+    const floorStyle = input.floorStyle ? FLOOR_STYLES.find((f) => f.style === input.floorStyle)?.style : undefined;
+    if (input.floorStyle && !floorStyle) throw new GameError('Diesen Bodenbelag gibt es nicht.');
     const tile = { i: Number(input.i), j: Number(input.j) };
     if (!inBounds(roomOf(company, floor), tile)) throw new GameError('Die Zone muss im Raum liegen.');
-    if (!isSeparateRoom(company, floor, tile)) throw new GameError('Das ist kein eigener Raum. Trenne ihn mit Wänden und einer Tür ab.');
+    // Die Lobby ist der Raum hinter dem Eingang. Alle anderen Zonen müssen abgetrennt sein.
+    if (input.kind !== 'lobby' && !isSeparateRoom(company, floor, tile)) throw new GameError('Das ist kein eigener Raum. Trenne ihn mit Wänden und einer Tür ab.');
     company.zones ??= [];
     const existing = zoneAt(company, floor, tile);
     if (existing) {
@@ -623,10 +624,12 @@ export class Engine {
         throw new GameError('In diesem Raum läuft gerade eine Besprechung.');
       }
       Object.assign(existing, { kind: input.kind, name });
+      if (floorStyle) existing.floorStyle = floorStyle;
+      else delete existing.floorStyle;
       this.touch(company);
       return existing;
     }
-    const zone: Zone = { id: shortId(), kind: input.kind, name, ...(floor ? { floor } : {}), i: tile.i, j: tile.j };
+    const zone: Zone = { id: shortId(), kind: input.kind, name, ...(floorStyle ? { floorStyle } : {}), ...(floor ? { floor } : {}), i: tile.i, j: tile.j };
     company.zones.push(zone);
     this.touch(company);
     return zone;
@@ -1234,7 +1237,7 @@ export class Engine {
     this.touch(company);
   }
 
-  /** Die Abnahme ist Sache des Menschen. Nur sie bringt Baupunkte, Verbrauch nie. */
+  /** Die Abnahme ist Sache des Menschen. */
   decide(companyId: string, orderId: string, input: { decision: 'accept' | 'reject'; checked?: boolean[] }): void {
     const company = this.require(companyId);
     const order = this.orderOf(company, orderId);
@@ -1245,7 +1248,7 @@ export class Engine {
       if (order.status === 'failed' || !order.files.length) throw new GameError('Ohne Ergebnis gibt es nichts abzunehmen.');
       order.status = 'accepted';
       company.buildPoints += RULES.buildPointsPerAcceptedOrder;
-      this.notify(company, 'info', `"${order.title}" abgenommen. +${RULES.buildPointsPerAcceptedOrder} Baupunkte.`);
+      this.notify(company, 'info', `"${order.title}" abgenommen.`);
     } else {
       order.status = 'rejected';
     }
@@ -2472,13 +2475,11 @@ export class Engine {
 
   /* ---------- Bauen ---------- */
 
-  private assertBuildPoints(company: Company, cost: number): void {
-    if (this.unlimitedBuild) return;
-    if (company.buildPoints < cost) throw new GameError(`Dafür fehlen Baupunkte: ${cost} nötig, ${company.buildPoints} vorhanden.`);
-  }
-
-  private spendBuildPoints(company: Company, cost: number): void {
-    if (!this.unlimitedBuild) company.buildPoints -= cost;
+  /** Räume richten sich nach der Zahl der Agenten. Zum Ausprobieren hebt der Schalter die Grenze auf. */
+  private assertTeam(company: Company, needed: number): void {
+    if (this.unlimitedBuild || needed <= 0) return;
+    const size = teamSize(company);
+    if (size < needed) throw new GameError(`Das lohnt sich erst ab ${needed} Agenten. Deine Firma hat ${size}.`);
   }
 
   private propsOf(locationId: LocationId): PlacedItem[] {
@@ -2493,7 +2494,7 @@ export class Engine {
     return wanted;
   }
 
-  /** Anbauen geht nur am eigenen Haus und nur so weit, wie das Grundstück es hergibt. Bezahlt wird in Baupunkten. */
+  /** Anbauen geht nur am eigenen Haus und nur so weit, wie das Grundstück es hergibt. Stockwerke richten sich nach der Teamgröße. */
   expandBuilding(companyId: string, input: { kind: 'breiter' | 'tiefer' | 'etage'; shaft?: { kind: Shaft['kind']; i: number; j: number; rot: Rotation } }): void {
     const company = this.require(companyId);
     const limits = buildLimits(company.locationId);
@@ -2501,29 +2502,27 @@ export class Engine {
     const { town } = company;
     const current = buildingAt(town, town.siteId);
     const next: Building = { ...current, shafts: [...current.shafts] };
-    let cost = EXTEND_COST;
-    if (input.kind === 'breiter') {
-      if (current.w >= limits.w) throw new GameError('Breiter gibt das Grundstück nicht her.');
-      next.w++;
-    } else if (input.kind === 'tiefer') {
-      if (current.d >= limits.d) throw new GameError('Tiefer gibt das Grundstück nicht her.');
-      next.d++;
+    if (input.kind === 'breiter' || input.kind === 'tiefer') {
+      if (input.kind === 'breiter' && current.w >= limits.w) throw new GameError('Breiter gibt das Grundstück nicht her.');
+      if (input.kind === 'tiefer' && current.d >= limits.d) throw new GameError('Tiefer gibt das Grundstück nicht her.');
+      // Anbauen lohnt sich, wenn jeder Schreibtisch besetzt ist.
+      const desks = company.placed.filter((p) => p.kind === 'desk').length;
+      if (!this.unlimitedBuild && teamSize(company) < desks) throw new GameError('Anbauen lohnt sich erst, wenn jeder Schreibtisch besetzt ist.');
+      if (input.kind === 'breiter') next.w++;
+      else next.d++;
     } else if (input.kind === 'etage') {
       if (current.floors >= limits.floors) throw new GameError('Höher gibt das Grundstück nicht her.');
-      cost = floorCost(current.floors);
+      this.assertTeam(company, teamForFloor(current.floors));
       next.floors++;
       if (!current.shafts.length) {
         if (!input.shaft) throw new GameError('Für ein Stockwerk brauchst du zuerst einen Platz für Treppe oder Fahrstuhl.');
-        cost += SHAFT_COST[input.shaft.kind] ?? 0;
         next.shafts.push(this.checkedShaft(company, input.shaft));
       }
     } else {
       throw new GameError('So lässt sich nicht anbauen.');
     }
-    this.assertBuildPoints(company, cost);
     town.buildings = { ...town.buildings, [town.siteId]: next };
     this.placeShafts(company, next);
-    this.spendBuildPoints(company, cost);
     this.touch(company);
   }
 
@@ -2534,12 +2533,9 @@ export class Engine {
     const current = buildingAt(town, town.siteId);
     if (current.floors < 2) throw new GameError('Ein Aufgang braucht ein zweites Stockwerk.');
     const shaft = this.checkedShaft(company, input);
-    const cost = SHAFT_COST[shaft.kind];
-    this.assertBuildPoints(company, cost);
     const next = { ...current, shafts: [...current.shafts, shaft] };
     town.buildings = { ...town.buildings, [town.siteId]: next };
     this.placeShafts(company, next);
-    this.spendBuildPoints(company, cost);
     this.touch(company);
   }
 
@@ -2571,14 +2567,12 @@ export class Engine {
     if (!stored && kind === 'ceoDesk' && [...company.placed, ...company.inventory].some((p) => p.kind === 'ceoDesk')) throw new GameError('Du hast schon einen Chefschreibtisch.');
     assertRotation(input.rot);
     const rot = input.rot;
-    if (info) this.assertBuildPoints(company, info.cost);
     const floor = this.checkFloor(company, input.floor);
     const check = checkPlacement(roomOf(company, floor), itemsOnFloor(company.placed, floor), { kind, i: input.i, j: input.j, rot });
     if (!check.ok) throw new GameError(check.reason);
     const item: PlacedItem = { id: stored?.id ?? shortId(), kind, i: input.i, j: input.j, rot, ...(floor ? { floor } : {}) };
     company.placed.push(item);
     if (stored) company.inventory = company.inventory.filter((s) => s !== stored);
-    if (info) this.spendBuildPoints(company, info.cost);
     this.touch(company);
     return item;
   }
@@ -2603,7 +2597,7 @@ export class Engine {
     this.touch(company);
   }
 
-  /** Endgültig weg, und ohne Erstattung: Baupunkte gibt es nur für abgenommene Arbeit. */
+  /** Endgültig weg. */
   deleteItem(companyId: string, itemId: string): void {
     const company = this.require(companyId);
     const stored = company.inventory.find((s) => s.id === itemId);
@@ -2657,12 +2651,12 @@ export class Engine {
     const parcel = target ? parcelOfLocation(locationId) : undefined;
     if (!target || !parcel || parcel.kind === 'lot') throw new GameError('Dorthin kannst du nicht umziehen.');
     const open = parcel.kind === 'home' || company.town.rented.includes(parcel.id);
-    this.relocate(company, locationId, parcel.id, open ? 0 : parcel.price ?? 0);
+    this.relocate(company, locationId, parcel.id);
     if (!open) company.town.rented.push(parcel.id);
     this.touch(company);
   }
 
-  /** Was die Figur vor Ort tun kann. Bezahlt wird in Baupunkten, das KI-Budget bleibt echtem Verbrauch vorbehalten. */
+  /** Was die Figur vor Ort tun kann. Welche Räume sich lohnen, richtet sich nach der Zahl der Agenten. */
   townAction(companyId: string, parcelId: string, input: { action: 'buy' | 'rent' | 'build' | 'move'; locationId?: LocationId }): void {
     const company = this.require(companyId);
     const parcel = parcelById(parcelId);
@@ -2672,16 +2666,14 @@ export class Engine {
       case 'buy':
         if (parcel.kind !== 'lot') throw new GameError('Das steht nicht zum Verkauf.');
         if (town.owned.includes(parcel.id)) throw new GameError('Dieses Grundstück gehört dir schon.');
-        this.assertBuildPoints(company, parcel.price!);
-        this.spendBuildPoints(company, parcel.price!);
+        this.assertTeam(company, teamFor(parcel.locationId));
         town.owned.push(parcel.id);
         this.notify(company, 'info', `${parcel.name} gehört jetzt dir. Hier kannst du bauen.`);
         break;
       case 'rent':
         if (parcel.kind !== 'vacant') throw new GameError('Das ist nicht zu vermieten.');
         if (town.rented.includes(parcel.id)) throw new GameError('Das hast du schon gemietet.');
-        this.assertBuildPoints(company, parcel.price!);
-        this.spendBuildPoints(company, parcel.price!);
+        this.assertTeam(company, teamFor(parcel.locationId));
         town.rented.push(parcel.id);
         this.notify(company, 'info', `${parcel.name} ist gemietet. Die Tür führt hinein.`);
         break;
@@ -2689,8 +2681,7 @@ export class Engine {
         if (parcel.kind !== 'lot') throw new GameError('Hier kannst du nicht bauen.');
         if (!town.owned.includes(parcel.id)) throw new GameError('Kaufe das Grundstück zuerst.');
         if (town.built.includes(parcel.id)) throw new GameError('Hier steht schon dein Neubau.');
-        this.assertBuildPoints(company, parcel.buildCost!);
-        this.spendBuildPoints(company, parcel.buildCost!);
+        this.assertTeam(company, teamFor(parcel.locationId));
         town.built.push(parcel.id);
         this.notify(company, 'info', `Dein Neubau auf ${parcel.name} steht. Die Tür führt hinein.`);
         break;
@@ -2699,7 +2690,7 @@ export class Engine {
         if (!open) throw new GameError(parcel.kind === 'lot' ? 'Hier steht noch nichts, in das du einziehen könntest.' : parcel.kind === 'vacant' ? 'Miete das zuerst.' : 'Hier kannst du nicht einziehen.');
         const locationId = parcel.kind === 'home' ? input.locationId : parcel.locationId;
         if (!locationId || (parcel.kind === 'home' && !HOME_ROOMS.includes(locationId))) throw new GameError('Wähle das Kinderzimmer oder die Garage.');
-        this.relocate(company, locationId, parcel.id, 0);
+        this.relocate(company, locationId, parcel.id);
         break;
       }
       default:
@@ -2731,7 +2722,7 @@ export class Engine {
     return base;
   }
 
-  private relocate(company: Company, locationId: LocationId, siteId: string, cost: number): void {
+  private relocate(company: Company, locationId: LocationId, siteId: string): void {
     if (baseFloorOf(company, siteId) !== null && siteId !== company.town.siteId) throw new GameError('Hier arbeitet deine Firma schon als weiterer Standort.');
     const targetBuilding = buildingAt(company.town, siteId);
     const target = roomAt(locationId, targetBuilding);
@@ -2739,7 +2730,7 @@ export class Engine {
     if (company.runs.some((r) => r.status === 'running') || company.orders.some((o) => o.status === 'running') || company.meetings.some((m) => m.status === 'running') || company.commands.some((c) => c.status === 'running')) {
       throw new GameError('Warte, bis alle Aufträge und Besprechungen angehalten oder fertig sind. Mitten in der Arbeit zieht niemand um.');
     }
-    this.assertBuildPoints(company, cost);
+    this.assertTeam(company, teamFor(locationId));
 
     // Die Einrichtung des neuen Raums wird beim ersten Einzug ausgepackt, die des alten kommt ins Inventar.
     const placed: PlacedItem[] = company.town.furnished.includes(locationId) ? [] : this.propsOf(locationId);
@@ -2758,6 +2749,8 @@ export class Engine {
     for (const item of company.placed) {
       if (floorOf(item) >= SITE_STEP) continue;
       if (isShaft(item.kind)) continue;
+      // Wände, Türen und Fenster gehören zum Gebäude. Sie bleiben dort.
+      if (isEdgeKind(item.kind)) continue;
       if (isProp(item.kind)) {
         stored.push(item);
         continue;
@@ -2783,13 +2776,18 @@ export class Engine {
       else this.notify(company, 'info', `Die Abteilung "${department.name}" passt nicht in den neuen Grundriss. Stecke sie neu ab; ihr Wissen bleibt erhalten.`);
     }
     company.departments = kept;
+    // Benannte Räume hängen an den Wänden des alten Hauses und bleiben mit ihnen zurück.
+    const zonesLeft = (company.zones ?? []).filter((z) => floorOf(z) < SITE_STEP);
+    if (zonesLeft.length) {
+      company.zones = (company.zones ?? []).filter((z) => floorOf(z) >= SITE_STEP);
+      this.notify(company, 'info', `Wände und benannte Räume bleiben im alten Haus: ${zonesLeft.map((z) => z.name).join(', ')}.`);
+    }
     company.placed = [...placed, ...elsewhere];
     company.inventory.push(...stored.map((item) => ({ id: item.id, kind: item.kind, at: Date.now() })));
     if (!company.town.furnished.includes(locationId)) company.town.furnished.push(locationId);
     if (stored.length) this.notify(company, 'info', `Im Inventar liegt jetzt: ${stored.map((item) => furnitureByKind(item.kind).title).join(', ')}. Von dort stellst du es wieder auf.`);
     company.locationId = locationId;
     company.town.siteId = siteId;
-    this.spendBuildPoints(company, cost);
     this.notify(company, 'info', `Umgezogen: ${target.title}.`);
   }
 

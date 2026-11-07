@@ -1,7 +1,26 @@
 // Der Stadtplan von Silly Valley. Server und Client nutzen dieselben Grundstücke und Wege,
 // damit das, was die Karte anbietet, auch dem entspricht, was das Spiel zulässt.
 
-import type { LocationId, TownState } from './types.ts';
+import type { Company, LocationId, TownState } from './types.ts';
+
+/**
+ * Wie viele Agenten eine Firma betreibt, bestimmt, welche Räume sich lohnen. Wer zu zweit ist, braucht
+ * keinen Neubau mit drei Stockwerken, sondern zieht erst in einen leeren Laden.
+ */
+export const TEAM_FOR: Partial<Record<LocationId, number>> = {
+  eckladen: 2,
+  coworking: 3,
+  buero: 4,
+  fabrik: 6,
+  'neubau-klein': 5,
+  kino: 7,
+  'neubau-mittel': 9,
+  'neubau-gross': 14,
+};
+export const teamFor = (locationId: LocationId | undefined): number => (locationId ? (TEAM_FOR[locationId] ?? 0) : 0);
+/** Ein weiteres Stockwerk lohnt sich ab vier Agenten je Stockwerk, das schon steht. */
+export const teamForFloor = (floors: number): number => 4 * floors;
+export const teamSize = (company: Pick<Company, 'agents'>): number => company.agents.filter((a) => a.hired && !a.firedAt).length;
 
 export const TOWN_NAME = 'Silicon Valley';
 
@@ -36,7 +55,7 @@ export interface Parcel {
   /** Wo man steht, um hier etwas zu tun: immer ein Feld auf dem Gehweg. */
   entry: TownTile;
   building?: TownBuilding;
-  /** Miete oder Kaufpreis in Baupunkten. */
+  /** Alter Preis aus der Baupunkte-Zeit. Wird nicht mehr verlangt, bleibt für alte Spielstände. */
   price?: number;
   /** Bei Grundstücken: Kosten des Baus. */
   buildCost?: number;
@@ -206,9 +225,15 @@ const NAMED: Record<string, [number, number, Plot[]][]> = {
     [1, 0, [vacantPlot('kino', 'Altes Kino', 13, 10, 6, 260, 'kino', '#7d6a8c')]],
     [0, 1, [lotPlot('grund-elm', 'Eckgrundstück Dana Street', 'gross')]],
   ],
-  cupertino: [[0, 0, [lotPlot('grund-birke', 'Grundstück De Anza 3', 'klein')]]],
+  cupertino: [
+    [0, 0, [lotPlot('grund-birke', 'Grundstück De Anza 3', 'klein')]],
+    [1, 0, [vacantPlot('fabrik', 'Alte Fabrikhalle', 16, 12, 8, 0, 'fabrik', '#8a4a3a')]],
+  ],
   menlo: [[1, 1, [lotPlot('grund-sued-1', 'Grundstück Ravenswood 17', 'klein')]]],
-  sunnyvale: [[1, 0, [lotPlot('grund-sued-2', 'Grundstück Murphy Avenue 22', 'mittel')]]],
+  sunnyvale: [
+    [0, 0, [vacantPlot('coworking', 'Shared Office im Hinterhof', 10, 8, 5, 0, 'coworking', '#6f8a7a')]],
+    [1, 0, [lotPlot('grund-sued-2', 'Grundstück Murphy Avenue 22', 'mittel')]],
+  ],
 };
 
 const scatter = (i: number, j: number) => {

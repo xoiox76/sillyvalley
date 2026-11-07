@@ -15,7 +15,7 @@ export const MEETING_SIZE = 4;
 
 export const footprint = (kind: FurnitureKind, rot: Rotation | number = 0): { w: number; d: number } => {
   // Wände und Türen liegen auf einer Kante und belegen kein Feld.
-  if (kind === 'wall' || kind === 'door') return { w: 0, d: 0 };
+  if (isEdgeKind(kind)) return { w: 0, d: 0 };
   if (kind === 'table') return { w: 2, d: 2 };
   const base = PROPS.find((p) => p.kind === kind) ?? (kind === 'desk' || kind === 'ceoDesk' ? { w: 2, d: 2 } : kind === 'meeting' ? { w: MEETING_SIZE, d: MEETING_SIZE } : { w: 1, d: 1 });
   return rot % 2 === 1 ? { w: base.d, d: base.w } : { w: base.w, d: base.d };
@@ -111,7 +111,18 @@ export function meetingSeats(item: Pick<PlacedItem, 'i' | 'j' | 'rot'>): Seat[] 
 const edge = (a: Tile, b: Tile) => `${key(a)}>${key(b)}`;
 
 /** Wände und Türen sitzen auf Kanten zwischen zwei Feldern. */
-export const isEdgeKind = (kind: FurnitureKind | string) => kind === 'wall' || kind === 'door';
+export const isEdgeKind = (kind: FurnitureKind | string) => kind === 'wall' || kind === 'door' || kind === 'window' || kind === 'glass';
+
+/** Fenster dürfen auch in die beiden hinteren Außenwände. Die vorderen sind im Bild aufgeschnitten. */
+export function onBackWall(loc: Pick<LocationInfo, 'w' | 'd'>, edge: Pick<PlacedItem, 'kind' | 'i' | 'j' | 'rot'>): boolean {
+  if (edge.kind !== 'window' && edge.kind !== 'glass') return false;
+  const [, inner] = wallSides(edge);
+  if (!inBounds(loc, inner)) return false;
+  return edge.rot % 2 === 0 ? edge.j === 0 : edge.i === 0;
+}
+
+/** Was den Weg versperrt: alles auf Kanten außer der Tür. */
+export const blocksEdge = (kind: FurnitureKind | string) => isEdgeKind(kind) && kind !== 'door';
 
 /** Die zwei Felder links und rechts einer Wandkante. rot 0 liegt auf der Linie j, rot 1 auf der Linie i. */
 export function wallSides(w: Pick<PlacedItem, 'i' | 'j' | 'rot'>): [Tile, Tile] {
@@ -122,7 +133,7 @@ export function wallSides(w: Pick<PlacedItem, 'i' | 'j' | 'rot'>): [Tile, Tile] 
 export function blockedEdges(items: Pick<PlacedItem, 'kind' | 'i' | 'j' | 'rot'>[]): Set<string> {
   const edges = new Set<string>();
   for (const item of items) {
-    if (item.kind !== 'wall') continue;
+    if (!blocksEdge(item.kind)) continue;
     const [a, b] = wallSides(item);
     edges.add(edge(a, b));
     edges.add(edge(b, a));
@@ -222,7 +233,7 @@ export function checkPlacement(
 
   if (isEdgeKind(candidate.kind)) {
     const [a, b] = wallSides(candidate);
-    if (!inBounds(loc, a) || !inBounds(loc, b)) return { ok: false, reason: 'Eine Wand steht zwischen zwei Feldern im Raum.' };
+    if ((!inBounds(loc, a) || !inBounds(loc, b)) && !onBackWall(loc, candidate)) return { ok: false, reason: 'Eine Wand steht zwischen zwei Feldern im Raum.' };
     const same = others.find((o) => isEdgeKind(o.kind) && o.i === candidate.i && o.j === candidate.j && o.rot % 2 === candidate.rot % 2);
     if (same) return { ok: false, reason: same.kind === 'door' ? 'Hier ist schon eine Tür.' : 'Hier steht schon eine Wand.' };
   }
