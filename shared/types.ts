@@ -30,6 +30,11 @@ export type NoteStatus = 'open' | 'later' | 'sprint' | 'taken' | 'dropped';
 export interface BoardItem {
   id: string;
   title: string;
+  /** Platz im Backlog, vom Product Owner geordnet. 0 ist ganz oben. Fehlt er, ist der Zettel noch nicht eingeordnet. */
+  rank?: number;
+  urgency?: Urgency;
+  /** Warum der Product Owner ihn so eingeordnet hat. */
+  urgencyReason?: string;
   notes: string;
   criteria: string[];
   /** Für wen der Agent die Aufgabe hält, in seinen Worten. */
@@ -60,6 +65,8 @@ export interface PlacedItem {
   rot: Rotation;
   /** Die Etage. Fehlt sie, steht der Gegenstand im Erdgeschoss. */
   floor?: number;
+  /** Anstrich einer Wand oder Fensterwand. Fehlt er, ist sie weiß. */
+  color?: string;
 }
 
 /** Was ein Agent gerade tatsächlich tut. Wird ausschließlich aus Ereignissen des Agenten-Prozesses abgeleitet. */
@@ -255,7 +262,10 @@ export interface Fx {
   source: 'ezb' | 'ezb-gespeichert' | 'ersatzwert';
 }
 
-export type RunKind = 'interview' | 'order' | 'revision' | 'chat' | 'meeting' | 'manage' | 'help' | 'planning';
+export type RunKind = 'interview' | 'order' | 'revision' | 'chat' | 'meeting' | 'manage' | 'help' | 'planning' | 'backlog';
+
+/** Wie dringend ein Zettel ist. Der Product Owner legt das fest. */
+export type Urgency = 'hoch' | 'mittel' | 'niedrig';
 export type RunStatus = 'running' | 'success' | 'limit' | 'error' | 'stopped' | 'timeout' | 'interrupted';
 export type Billing = 'abo' | 'api' | 'test';
 
@@ -569,6 +579,27 @@ export interface MandateRound {
 
 export type MandateStatus = 'planning' | 'active' | 'closed';
 
+/** Der Manager entscheidet im Budget selbst. Mehr Geld erbittet er bei der Firmenleitung. */
+export interface BudgetRequest {
+  id: string;
+  round: number;
+  eur: number;
+  reason: string;
+  status: 'pending' | 'approved' | 'declined';
+  at: number;
+}
+
+/** Ein Strategievorschlag des Managers, den er mit der Firmenleitung klärt. Ihre Antwort sieht er in der nächsten Runde. */
+export interface StrategyProposal {
+  id: string;
+  round: number;
+  title: string;
+  text: string;
+  status: 'pending' | 'accepted' | 'declined';
+  answer: string;
+  at: number;
+}
+
 /** Ein Ziel mit Budget, das der Mensch einem Manager überträgt. Der Manager plant, die Grenzen setzt der Server durch. */
 export interface Mandate {
   id: string;
@@ -588,6 +619,9 @@ export interface Mandate {
   rounds: MandateRound[];
   proposals: Proposal[];
   contracts: Contract[];
+  /** Die offene oder letzte Bitte um mehr Budget. */
+  budgetRequest?: BudgetRequest | null;
+  strategies?: StrategyProposal[];
   lastError: string | null;
   file: string;
 }

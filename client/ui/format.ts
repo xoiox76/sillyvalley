@@ -64,7 +64,7 @@ export const RUN_KIND: Record<Run['kind'], string> = {
   chat: 'Gespräch',
   meeting: 'Besprechung',
   manage: 'Planung eines Projekts',
-  help: 'Hilfe für einen Kollegen', planning: 'Planning',
+  help: 'Hilfe für einen Kollegen', planning: 'Planning', backlog: 'Backlog ordnen',
 };
 
 export function fxNote(fx: Fx): string {

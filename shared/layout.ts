@@ -299,6 +299,14 @@ export type Rect = Pick<Department, 'i' | 'j' | 'w' | 'd'>;
 export const inRect = (r: Rect, t: Tile) => t.i >= r.i && t.j >= r.j && t.i < r.i + r.w && t.j < r.j + r.d;
 
 /** Zwei Ecken werden zum Bereich, egal in welcher Reihenfolge sie geklickt wurden. */
+/** Die Wandkanten rund um ein Rechteck aus Feldern: oben, unten, links, rechts. */
+export function rectWalls(r: Rect): { i: number; j: number; rot: Rotation }[] {
+  const edges: { i: number; j: number; rot: Rotation }[] = [];
+  for (let i = r.i; i < r.i + r.w; i++) edges.push({ i, j: r.j, rot: 0 }, { i, j: r.j + r.d, rot: 0 });
+  for (let j = r.j; j < r.j + r.d; j++) edges.push({ i: r.i, j, rot: 1 }, { i: r.i + r.w, j, rot: 1 });
+  return edges;
+}
+
 export function rectFromCorners(a: Tile, b: Tile): Rect {
   const i = Math.min(a.i, b.i);
   const j = Math.min(a.j, b.j);

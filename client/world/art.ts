@@ -32,10 +32,10 @@ function sprite(draw: (pen: Pen, l: Layer) => void, withOutline = true, size = C
 }
 
 /** Eine Wandkante. Sie läuft von Feld zu Feld und hat dieselbe Höhe wie die Glaswände. */
-export function wallSprite(rot: Rotation): Sprite {
-  return cached(`wall${rot % 2}`, () =>
+export function wallSprite(rot: Rotation, color = '#d9dee6'): Sprite {
+  return cached(`wall${rot % 2}${color}`, () =>
     sprite((pen) => {
-      const face = tri('#d9dee6', 0.12);
+      const face = tri(color, 0.12);
       if (rot % 2 === 0) pen.box(0, -0.07, 0, 1, 0.14, 50, face);
       else pen.box(-0.07, 0, 0, 0.14, 1, 50, face);
       // Ohne Umriss: Nebeneinander gesetzte Stücke laufen so als eine Wand durch, ohne Fugen.
@@ -62,20 +62,20 @@ export function doorSprite(rot: Rotation): Sprite {
 }
 
 /** Kanten-Bauteile: Wand, Tür, Fensterwand mit breitem Fensterband, bodentiefe Glaswand. */
-export function edgeSprite(kind: string, rot: Rotation, low = false): Sprite {
-  if (low) return lowEdgeSprite(kind, rot);
+export function edgeSprite(kind: string, rot: Rotation, low = false, color = '#d9dee6'): Sprite {
+  if (low) return lowEdgeSprite(kind, rot, color);
   if (kind === 'door') return doorSprite(rot);
-  if (kind === 'window') return windowSprite(rot);
+  if (kind === 'window') return windowSprite(rot, color);
   if (kind === 'glass') return glassWallSprite(rot);
-  return wallSprite(rot);
+  return wallSprite(rot, color);
 }
 
 /** Heruntergeschaltete Wände: nur ein Sockel, damit man in die Räume sieht. Türen zeigen zwei Pfosten. */
-export function lowEdgeSprite(kind: string, rot: Rotation): Sprite {
-  return cached(`low${kind}${rot % 2}`, () =>
+export function lowEdgeSprite(kind: string, rot: Rotation, paint = '#d9dee6'): Sprite {
+  return cached(`low${kind}${rot % 2}${paint}`, () =>
     sprite((pen) => {
       const along = rot % 2 === 0;
-      const color = kind === 'glass' || kind === 'window' ? tri('#9fd8e8', 0.08) : kind === 'door' ? tri('#7a5a3c', 0.12) : tri('#d9dee6', 0.12);
+      const color = kind === 'glass' ? tri('#9fd8e8', 0.08) : kind === 'door' ? tri('#7a5a3c', 0.12) : tri(paint, 0.12);
       const part = (from: number, to: number) => (along ? pen.box(from, -0.07, 0, to - from, 0.14, 7, color) : pen.box(-0.07, from, 0, 0.14, to - from, 7, color));
       if (kind === 'door') {
         part(0, 0.14);
@@ -88,10 +88,10 @@ export function lowEdgeSprite(kind: string, rot: Rotation): Sprite {
 }
 
 /** Wand mit breitem Fenster: Brüstung unten, Glasband, Sturz oben. */
-export function windowSprite(rot: Rotation): Sprite {
-  return cached(`window${rot % 2}`, () =>
+export function windowSprite(rot: Rotation, color = '#d9dee6'): Sprite {
+  return cached(`window${rot % 2}${color}`, () =>
     sprite((pen) => {
-      const wall = tri('#d9dee6', 0.12);
+      const wall = tri(color, 0.12);
       const glass = tri('#9fd8e8', 0.08);
       const along = rot % 2 === 0;
       const part = (z: number, h: number, c: typeof wall, thick = 0.14) =>
@@ -717,6 +717,17 @@ export function itemIcon(kind: string): string {
       break;
     case 'lift':
       put(liftShell());
+      break;
+    case 'roomwalls':
+      // Ein kleiner Raum: hinten die beiden Wände, vorn die beiden anderen.
+      put(wallSprite(0), 0, 0);
+      put(wallSprite(0), 1, 0);
+      put(wallSprite(1), 0, 0);
+      put(wallSprite(1), 0, 1);
+      put(wallSprite(1), 2, 0);
+      put(wallSprite(1), 2, 1);
+      put(wallSprite(0), 0, 2);
+      put(wallSprite(0), 1, 2);
       break;
     case 'department': {
       // Ein abgesteckter Bereich: getönte Felder mit Rand.

@@ -5,7 +5,7 @@ import path from 'node:path';
 import { after, before, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { BASE_CONTEXT_TOKENS, LOCATIONS, MODELS, RULES, agentTitle, isProp, commandRisks, costFromUsage, estimateStepUsd, locationById, modelById } from '../shared/catalog.ts';
-import { blockedEdges, blockedSet, checkPlacement, findPath, footprint, meetingDoor, meetingSeats, regionOf, standingTile } from '../shared/layout.ts';
+import { blockedEdges, blockedSet, checkPlacement, findPath, footprint, meetingDoor, meetingSeats, rectWalls, regionOf, standingTile } from '../shared/layout.ts';
 import type { Look } from '../shared/types.ts';
 import { Engine } from '../server/engine.ts';
 import { meetingRooms } from '../shared/zones.ts';
@@ -18,7 +18,7 @@ import { html } from '../client/ui/html.ts';
 import { ROLE_TEMPLATE, colorInText, parseRole, roleToMarkdown, withRoleColor } from '../shared/roleMarkdown.ts';
 import { NOTE_COLORS, noteInk, noteLook, roleColor } from '../shared/board.ts';
 import { baseFloorOf, buildingAt, roomOf, siteAt } from '../shared/building.ts';
-import { isScrumMaster, openSprint, scrumMaster, sprintCommitted, sprintRows } from '../shared/scrum.ts';
+import { isScrumMaster, openSprint, scrumMaster, sprintCommitted, sprintRows, productOwner } from '../shared/scrum.ts';
 import { parsePlanning } from '../server/prompts.ts';
 import { quotaClosedUntil } from '../shared/quota.ts';
 import { agentEnv } from '../server/providers/anthropic.ts';
@@ -1002,6 +1002,48 @@ test('Das Budget einer Abteilung ist eine harte Grenze, und das allgemeine Budge
   assert.ok(fs.existsSync(path.join(engine.workspaceOf(company.id), dept.knowledgeDir)), 'Das Wissen bleibt');
 });
 
+test('Manager: entscheidet selbst, bittet nur um Budget und klärt Strategie mit der Firmenleitung', async () => {
+  const { company, dept, alex } = await departmentCompany();
+  engine.updateDepartment(company.id, dept.id, { budgetEur: 5 });
+  // Wer alles selbst entscheidet, bekommt auch neues Geld zur freien Verfügung.
+  const mandate = await engine.startMandate(company.id, mandateInput(alex.id, { notes: '[szenario:managerbudget]', budgetEur: 1, selfStartUpToEur: 1 }));
+  await until(() => mandate.status === 'active', 'Planung');
+  assert.equal(mandate.budgetRequest?.status, 'pending');
+  assert.equal(mandate.budgetRequest?.eur, 1);
+  assert.match(mandate.budgetRequest!.reason, /Runde/);
+  assert.ok(company.notices.some((n) => /bittet um 1,00 € mehr Budget/.test(n.text)), 'Die Firmenleitung erfährt davon');
+  assert.ok(mandate.proposals.every((p) => p.status !== 'pending'), 'Im Budget gibt der Manager nichts zur Freigabe');
+  await until(() => alex.live.kind !== 'writing' && !company.runs.some((r) => r.status === 'running' && r.agentId === alex.id), 'Manager frei');
+
+  const runs = company.runs.filter((r) => r.kind === 'manage').length;
+  await engine.decideBudget(company.id, mandate.id, { decision: 'approve' });
+  assert.equal(mandate.budgetEur, 2);
+  assert.equal(mandate.selfStartUpToEur, 2, 'Er entscheidet weiter selbst');
+  assert.equal(mandate.budgetRequest?.status, 'approved');
+  assert.equal(company.runs.filter((r) => r.kind === 'manage').length, runs + 1, 'Mit dem Geld plant er gleich weiter');
+  assert.match(company.runs.at(-1)!.prompt, /1,00 € mehr Budget freigegeben/);
+  await assert.rejects(engine.decideBudget(company.id, mandate.id, { decision: 'approve' }), /keine Bitte um Budget/);
+  await until(() => mandate.status === 'active', 'Zweite Planung');
+});
+
+test('Manager: Strategievorschläge beantwortet die Firmenleitung, er sieht die Antwort in der nächsten Runde', async () => {
+  const { company, alex } = await departmentCompany();
+  const mandate = await engine.startMandate(company.id, mandateInput(alex.id, { notes: '[szenario:managerstrategie]', selfStartUpToEur: 1 }));
+  await until(() => mandate.status === 'active', 'Planung');
+  const strategy = mandate.strategies?.[0];
+  assert.ok(strategy, 'Ein Strategievorschlag liegt vor');
+  assert.equal(strategy.title, 'Erst mobil');
+  assert.equal(strategy.status, 'pending');
+  assert.throws(() => engine.answerStrategy(company.id, mandate.id, strategy.id, { decision: 'vielleicht' as never }), /an oder lehne/);
+  engine.answerStrategy(company.id, mandate.id, strategy.id, { decision: 'accept', answer: 'Ja, aber mit Desktop später.' });
+  assert.equal(strategy.status, 'accepted');
+  assert.throws(() => engine.answerStrategy(company.id, mandate.id, strategy.id, { decision: 'decline' }), /schon geantwortet/);
+  await until(() => !company.runs.some((r) => r.status === 'running' && r.agentId === alex.id), 'Manager frei');
+  await engine.planMandate(company.id, mandate.id);
+  assert.match(company.runs.at(-1)!.prompt, /Erst mobil: angenommen. Antwort: Ja, aber mit Desktop später./);
+  await until(() => mandate.status === 'active', 'Zweite Planung');
+});
+
 test('Ein Manager plant im Budget, und die Freigabe-Stufe entscheidet, was er selbst startet', async () => {
   const { company, dept, alex, robin } = await departmentCompany();
   const mandate = await engine.startMandate(company.id, mandateInput(alex.id));
@@ -1981,6 +2023,26 @@ test('Zonen: Ein Raum aus Wänden und Tür wird mit Tisch zum Besprechungsraum',
   assert.equal((company.zones ?? []).length, 0);
 });
 
+test('Raum-Werkzeug und Anstrich: vier Wände um ein Rechteck, Wände bekommen Farbe', () => {
+  const edges = rectWalls({ i: 2, j: 1, w: 3, d: 2 });
+  assert.equal(edges.length, 2 * 3 + 2 * 2, 'Oben und unten je drei, links und rechts je zwei');
+  assert.ok(edges.some((e) => e.i === 2 && e.j === 1 && e.rot === 0), 'Obere Kante');
+  assert.ok(edges.some((e) => e.i === 5 && e.j === 2 && e.rot === 1), 'Rechte Kante');
+  // Die Wände schließen das Rechteck ab: Von innen kommt man nicht hinaus.
+  const walls = edges.map((e, n) => ({ id: `w${n}`, kind: 'wall' as const, ...e }));
+  assert.equal(regionOf(garage, walls, { i: 3, j: 1 }).size, 6);
+
+  const company = newCompany();
+  const wall = engine.placeItem(company.id, { kind: 'wall', i: 3, j: 2, rot: 0 });
+  engine.paintItem(company.id, wall.id, { color: 'salbei' });
+  assert.equal(wall.color, 'salbei');
+  engine.paintItem(company.id, wall.id, { color: 'weiss' });
+  assert.equal(wall.color, undefined, 'Weiß ist der Grundton');
+  assert.throws(() => engine.paintItem(company.id, wall.id, { color: 'lila' }), /Farbe/);
+  const plant = engine.placeItem(company.id, { kind: 'plant', i: 6, j: 4, rot: 0 });
+  assert.throws(() => engine.paintItem(company.id, plant.id, { color: 'sand' }), /Wände/);
+});
+
 test('Fensterwand und Glaswand versperren wie eine Wand, die Tür nicht; alle trennen Räume', () => {
   const at = (kind: 'wall' | 'door' | 'window' | 'glass') => ({ id: kind, kind, i: 2, j: 1, rot: 0 as const });
   for (const kind of ['wall', 'window', 'glass'] as const) assert.ok(blockedEdges([at(kind)]).has('2,0>2,1'), kind);
@@ -2627,6 +2689,36 @@ test('Scrum: Planning, Freigabe, Board, Ende, Retrospektive', async () => {
   await until(() => meeting.status !== 'running', 'Retro');
   engine.closeSprint(company.id, sprint.id);
   assert.equal(openSprint(company), null);
+});
+
+test('Product Owner: ordnet das Backlog nach Dringlichkeit und hält das Planning ohne Scrum Master', async () => {
+  const company = newCompany();
+  const eins = engine.createNote(company.id, { title: 'Eins' });
+  engine.createNote(company.id, { title: 'Zwei' });
+  const drei = engine.createNote(company.id, { title: 'Drei' });
+  await assert.rejects(engine.orderBacklog(company.id), /Product Owner/);
+  const po = await engine.hire(company.id, { name: 'Pia', roleId: 'po', skillIds: ['backlog'], modelId: 'claude-haiku-5-5', look: LOOK });
+  await until(() => po.hired, 'Einstellung');
+  assert.equal(productOwner(company)?.id, po.id);
+
+  await engine.orderBacklog(company.id);
+  const run = company.runs.find((r) => r.kind === 'backlog')!;
+  assert.match(run.prompt, /Eins/);
+  await until(() => drei.rank !== undefined, 'Geordnet');
+  // Die Attrappe kehrt die Reihenfolge um und macht den ersten dringend.
+  assert.equal(drei.rank, 0);
+  assert.equal(drei.urgency, 'hoch');
+  assert.equal(eins.urgency, 'niedrig');
+  assert.ok(eins.urgencyReason);
+  assert.equal(company.orders.length, 0, 'Ordnen startet nichts');
+
+  await until(() => po.live.kind === 'idle', 'Frei');
+  const sprint = await engine.planSprint(company.id, { budgetEur: 0.5 });
+  assert.equal(sprint.scrumMasterId, po.id, 'Ohne Scrum Master plant der Product Owner');
+  const planning = company.runs.find((r) => r.kind === 'planning')!;
+  assert.ok(planning.prompt.indexOf('Drei') < planning.prompt.indexOf('Eins'), 'Das Planning sieht die Reihenfolge');
+  assert.match(planning.prompt, /Dringlichkeit: hoch/);
+  await until(() => sprint.status === 'proposed', 'Vorschlag');
 });
 
 test('Scrum: Planning scheitert sauber, und eine eigene Rolle zählt', async () => {

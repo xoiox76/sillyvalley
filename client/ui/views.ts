@@ -4,8 +4,7 @@ import { languageSwitch } from './language.ts';
 import { locale } from '../i18n/translate.ts';
 import {
   DEFAULT_CEO, FURNITURE, staffOf, LOOK_OPTIONS, MODELS, PRICES_AS_OF, PROVIDERS, ROLES, RULES, SKILLS, costFromUsage, furnitureByKind,
-  BASE_CONTEXT_TOKENS, agentTitle, estimateStepUsd, estimateTokensOfChars, locationById, modelById, roleById, skillById, skillTitle,
-} from '../../shared/catalog.ts';
+  BASE_CONTEXT_TOKENS, agentTitle, estimateStepUsd, estimateTokensOfChars, locationById, modelById, roleById, skillById, skillTitle, WALL_COLORS } from '../../shared/catalog.ts';
 import { deskDepartment } from '../../shared/layout.ts';
 import { FLOOR_STYLES, ZONE_COLORS, ZONE_KINDS, meetingRooms } from '../../shared/zones.ts';
 import { NOTE_COLORS, boardNotes, noteLook, roleColor, type BoardNote } from '../../shared/board.ts';
@@ -13,9 +12,9 @@ import { colorInText } from '../../shared/roleMarkdown.ts';
 import { quotaClosedUntil } from '../../shared/quota.ts';
 import { ROADMAP_PHASES, roadmapRows } from '../../shared/roadmap.ts';
 import { CONNECTION_KINDS, OPENAI_PRICES_AS_OF, connectionKind } from '../../shared/providers.ts';
-import { SPRINT_COLUMNS, openSprint, scrumMaster, sprintCommitted, sprintRows } from '../../shared/scrum.ts';
+import { SPRINT_COLUMNS, byRank, openSprint, productOwner, scrumMaster, sprintCommitted, sprintPlanner, sprintRows } from '../../shared/scrum.ts';
 import { baseFloorOf, siteAt, siteBase, buildLimits, buildingAt, floorName, floorOf, isShaft, roomAt, roomOf } from '../../shared/building.ts';
-import type { Agent, BoardItem, CommandRequest, Company, CompanyRole, Contract, CustomSkill, Department, LiveKind, Look, Mandate, Meeting, Order, Pool, ProjectAgent, Proposal, Run, Snapshot, Sprint, Stage, StageKind, Team, Zone } from '../../shared/types.ts';
+import type { Agent, BoardItem, CommandRequest, Company, CompanyRole, Contract, CustomSkill, Department, LiveKind, Look, Mandate, Meeting, Order, Pool, ProjectAgent, Proposal, Run, Snapshot, Sprint, Stage, StageKind, Team, Urgency, Zone } from '../../shared/types.ts';
 import { HOME_ROOMS, TOWN_NAME, teamFor, teamForFloor, teamSize, type City, type Parcel } from '../../shared/town.ts';
 import { portraitUrl } from '../world/characters.ts';
 import { itemIcon } from '../world/art.ts';
@@ -736,7 +735,8 @@ function workHistory(company: Company, agent: Agent): Safe | null {
 export function openMessages(s: Snapshot): number {
   const { company } = s;
   return company.commands.filter((c) => c.status === 'pending').length
-    + company.mandates.reduce((sum, m) => sum + m.proposals.filter((p) => p.status === 'pending').length + m.contracts.filter((c) => c.status === 'pending').length, 0)
+    + company.mandates.reduce((sum, m) => sum + m.proposals.filter((p) => p.status === 'pending').length + m.contracts.filter((c) => c.status === 'pending').length
+      + (m.budgetRequest?.status === 'pending' ? 1 : 0) + (m.strategies ?? []).filter((st) => st.status === 'pending').length, 0)
     + company.orders.filter((o) => o.status === 'review').length
     + (company.sprints ?? []).filter((sprint) => sprint.status === 'proposed').length;
 }
@@ -752,7 +752,7 @@ function laptopApps(s: Snapshot, files: FileEntry[]): { id: LaptopApp; title: st
     { id: 'dateien', title: 'Dateien', hint: `Dateien der Firma, ${files.length} insgesamt`, glyph: '▤', badge: 0 },
     { id: 'akten', title: 'Akten', hint: 'Mitarbeiterakten mit Kosten und Ergebnissen', glyph: '☰', badge: 0 },
     { id: 'rollen', title: 'Rollen', hint: 'Rollen als Markdown definieren', glyph: '#', badge: 0 },
-    ...(scrumMaster(company) || sprint || (company.sprints ?? []).length
+    ...(sprintPlanner(company) || sprint || (company.sprints ?? []).length
       ? [{ id: 'sprint' as const, title: 'Sprint', hint: sprint ? `Sprint ${sprint.number}: ${SPRINT_STATUS[sprint.status]}` : 'Kein Sprint offen', glyph: '▦', badge: 0 }]
       : []),
     { id: 'hilfe', title: 'Tastenkürzel', hint: 'Alle Tastenkürzel des Spiels', glyph: '?', badge: 0 },
@@ -880,7 +880,7 @@ function shellApp(s: Snapshot, draft: FilesDraft, files: FileEntry[], folds: Wor
 /** Das Scrum-Programm: Planning, Entscheidung, Board, Abschluss. */
 function sprintApp(s: Snapshot): Safe {
   const { company } = s;
-  const master = scrumMaster(company);
+  const master = sprintPlanner(company);
   const sprint = openSprint(company);
   const past = (company.sprints ?? []).filter((x) => x.status === 'closed').reverse();
   const nameOf = (id: string) => company.agents.find((a) => a.id === id)?.name ?? 'Jemand';
@@ -1673,6 +1673,34 @@ function mandatesSection(s: Snapshot, selectedId: string | null): Safe | null {
   </section>`;
 }
 
+const ASK_STATUS: Record<string, string> = { pending: 'wartet auf dich', approved: 'freigegeben', declined: 'abgelehnt', accepted: 'angenommen' };
+
+/** Was der Manager mit dir klärt: mehr Budget und Strategie. Alles andere entscheidet er selbst. */
+function managerAsks(mandate: Mandate, managerName: string): Safe | null {
+  const request = mandate.budgetRequest;
+  const strategies = mandate.strategies ?? [];
+  if (!request && !strategies.length) return null;
+  return html`<section class="round" data-key="asks-${mandate.id}">
+    <h4>${managerName} klärt mit dir</h4>
+    ${request ? html`<div class="proposal proposal-${request.status}" data-key="budget-${request.id}">
+      <div class="proposal-head"><strong>Mehr Budget: ${eur(request.eur)}</strong><span class="chip">${ASK_STATUS[request.status]}</span></div>
+      ${request.reason ? html`<p class="hint">${request.reason}</p>` : null}
+      ${request.status === 'pending' ? html`<div class="btn-row">
+        <button class="btn btn-primary btn-small" data-action="budget-approve" data-mandate="${mandate.id}">Freigeben</button>
+        <button class="btn btn-small" data-action="budget-decline" data-mandate="${mandate.id}">Ablehnen</button></div>` : null}
+    </div>` : null}
+    ${strategies.map((st) => html`<div class="proposal proposal-${st.status}" data-key="strategy-${st.id}">
+      <div class="proposal-head"><strong>Strategie: ${st.title}</strong><span class="chip">${ASK_STATUS[st.status]}</span></div>
+      ${st.text ? html`<p class="hint">${st.text}</p>` : null}
+      ${st.status === 'pending' ? html`<label class="field"><span>Deine Antwort (optional)</span><textarea name="strategy-${st.id}" rows="2" maxlength="600"></textarea></label>
+        <div class="btn-row">
+          <button class="btn btn-primary btn-small" data-action="strategy-accept" data-mandate="${mandate.id}" data-id="${st.id}">Annehmen</button>
+          <button class="btn btn-small" data-action="strategy-decline" data-mandate="${mandate.id}" data-id="${st.id}">Ablehnen</button></div>`
+        : st.answer ? html`<p class="hint">Deine Antwort: ${st.answer}</p>` : null}
+    </div>`)}
+  </section>`;
+}
+
 function mandateDetail(s: Snapshot, mandate: Mandate): Safe {
   const { company } = s;
   const manager = company.agents.find((a) => a.id === mandate.managerId);
@@ -1694,6 +1722,7 @@ function mandateDetail(s: Snapshot, mandate: Mandate): Safe {
       <div class="spent-line"><span>Verbrauch des Projekts</span><span class="num">${eur(spent)} von ${eur(mandate.budgetEur)}</span></div>
       ${meter(spent, mandate.budgetEur, 'Budget des Projekts')}
       ${mandate.lastError ? html`<p class="form-error">${mandate.lastError}</p>` : null}
+      ${managerAsks(mandate, manager?.name ?? 'Der Manager')}
       ${rounds.map((round) => html`<section class="round" data-key="round-${round.round}">
         <h4>Planungsrunde ${round.round}${round.done ? ', Ziel laut Manager erreicht' : ''}</h4>
         <blockquote class="summary">${round.summary}</blockquote>
@@ -1859,6 +1888,17 @@ export function noteModal(draft: NoteDraft): Safe {
 }
 
 /** Die Tafel: was Agenten vorschlagen und noch niemand bekommen hat. */
+/** Der Bau-Katalog nach Zweck, wie in einem Bauspiel. */
+const CATALOG_GROUPS: { id: string; title: string; kinds: string[] }[] = [
+  { id: 'bauen', title: 'Bauen', kinds: ['roomwalls', 'wall', 'door', 'window', 'glass'] },
+  { id: 'arbeit', title: 'Arbeiten', kinds: ['desk', 'ceoDesk', 'table', 'meeting', 'board', 'shelf'] },
+  { id: 'freizeit', title: 'Freizeit', kinds: ['coffee', 'sofa', 'beanbag', 'arcade'] },
+  { id: 'deko', title: 'Deko', kinds: ['plant'] },
+  { id: 'bereiche', title: 'Bereiche', kinds: ['department'] },
+];
+
+const URGENCY_TITLE: Record<Urgency, string> = { hoch: 'dringend', mittel: 'mittel', niedrig: 'später' };
+
 /** Zu welcher Abteilung ein Zettel gehört: über den Auftrag des Vorschlags oder über die Person, die ihn angehängt hat. */
 function noteDepartment(company: Company, note: { mandateId: string | null; byAgentId: string | null }): string | null {
   if (note.mandateId) return company.mandates.find((m) => m.id === note.mandateId)?.departmentId ?? null;
@@ -1870,16 +1910,20 @@ function boardSection(s: Snapshot, noteId: string | null, departmentId: string |
   const { company } = s;
   const department = departmentId ? company.departments.find((d) => d.id === departmentId) ?? null : null;
   // Eine Tafel in einer Abteilung zeigt nur deren Zettel. Die Tafel im Büro zeigt alle.
-  const notes = boardNotes({ board: company.board ?? [], mandates: company.mandates }).filter((n) => !department || noteDepartment(company, n) === department.id);
+  // Die Reihenfolge des Product Owners gilt auch an der Tafel. Vorschläge von Managern stehen davor.
+  const item = (id: string) => (company.board ?? []).find((n) => n.id === id);
+  const notes = byRank(boardNotes({ board: company.board ?? [], mandates: company.mandates }).map((n) => ({ ...n, rank: item(n.id)?.rank, urgency: item(n.id)?.urgency }))).filter((n) => !department || noteDepartment(company, n) === department.id);
+  const owner = productOwner(company);
   const later = (company.board ?? []).filter((n) => n.status === 'later');
   const selected = notes.find((n) => n.id === noteId) ?? null;
   const nameOf = (id: string | null) => (id ? company.agents.find((a) => a.id === id)?.name ?? 'Jemand' : 'Du');
   return html`<section class="tafel" data-key="tafel">
     <div class="section-head"><h3>${department ? `Tafel · ${department.name}` : scrumMaster(company) ? 'Tafel · Backlog' : 'Tafel'}</h3><span class="panel-sub">${notes.length === 1 ? '1 Zettel' : `${notes.length} Zettel`}</span></div>
     ${department ? html`<button class="btn btn-small" data-action="board-all">Alle Zettel zeigen</button>` : null}
+    ${owner && notes.length ? html`<button class="btn btn-small" data-action="order-backlog" ${owner.live.kind === 'idle' ? '' : 'disabled'}>Backlog ordnen lassen (${owner.name})</button>` : null}
     <ul class="tafel-board">
       ${notes.map((note, index) => html`<li data-key="${note.id}"><button class="zettel zettel-${note.kind} ${note.id === noteId ? 'selected' : ''}" style="--tilt:${(index % 5) - 2}deg;background:${noteLook(company, note).color};color:${noteLook(company, note).ink}" data-action="select-note" data-id="${note.id}" aria-pressed="${note.id === noteId}" ${note.kind === 'vorschlag' ? '' : html`data-note="${note.id}"`}>
-        <span class="zettel-title">${note.title}</span><small>${noteLook(company, note).role || nameOf(note.byAgentId)}${note.kind === 'vorschlag' ? ' · Vorschlag' : ''}</small>
+        <span class="zettel-title">${note.title}</span><small>${noteLook(company, note).role || nameOf(note.byAgentId)}${note.kind === 'vorschlag' ? ' · Vorschlag' : ''}</small>${note.urgency ? html`<span class="zettel-urgency urgency-${note.urgency}">${URGENCY_TITLE[note.urgency]}</span>` : null}
       </button></li>`)}
       <li data-key="neu"><button class="zettel zettel-neu" data-action="open-note">+ Zettel</button></li>
     </ul>
@@ -2205,16 +2249,23 @@ export interface RoomNaming {
   ok: boolean;
 }
 
-export function buildPanel(s: Snapshot, buildKind: string | null, moving: boolean, message: string, anchored: boolean, inventoryId: string | null = null, confirmDelete: string | null = null, atHead = true, room: RoomNaming | null = null, wallsLow = false): Safe {
+export function buildPanel(s: Snapshot, buildKind: string | null, moving: boolean, message: string, anchored: boolean, inventoryId: string | null = null, confirmDelete: string | null = null, atHead = true, room: RoomNaming | null = null, wallsLow = false, paintColor: string | null = null): Safe {
   const fromInventory = Boolean(inventoryId);
   const deletable = moving || fromInventory;
   const { company } = s;
   const zone = buildKind === 'department';
-  const info = buildKind && !zone ? furnitureByKind(buildKind as never) : null;
+  const info = buildKind && !zone && buildKind !== 'roomwalls' ? furnitureByKind(buildKind as never) : null;
   const shaft = info ? isShaft(info.kind) : false;
   const rotates = info ? !(shaft && moving) : false;
   return html`
     <div class="panel-head"><h2>Büro ausbauen</h2></div>
+    ${buildKind === 'roomwalls' ? html`
+      <section class="detail">
+        <h3>Raum aufziehen</h3>
+        <p class="hint">${anchored ? 'Klicke jetzt die gegenüberliegende Ecke. Wände entstehen rundherum.' : 'Klicke die erste Ecke des Raums im Büro.'} Eine Tür setzt du danach selbst.</p>
+        ${message ? html`<p class="form-error">${message}</p>` : null}
+        <p class="hint"><kbd>Esc</kbd> abbrechen · <kbd>Strg</kbd>+<kbd>Z</kbd> rückgängig</p>
+      </section>` : null}
     ${zone ? html`
       <section class="detail">
         <h3>Abteilung abstecken</h3>
@@ -2246,17 +2297,23 @@ export function buildPanel(s: Snapshot, buildKind: string | null, moving: boolea
       </ul>
       <p class="hint">Anklicken und neu platzieren.</p>
     </section>` : null}
-    <ul class="catalog catalog-grid">
-      ${FURNITURE.map((f) => html`<li data-key="${f.kind}">
-        <button class="catalog-tile ${f.kind === buildKind && !moving && !fromInventory ? 'selected' : ''}" data-action="build-pick" data-id="${f.kind}" title="${f.blurb}" ${(f.kind === 'ceoDesk' && [...company.placed, ...(company.inventory ?? [])].some((p) => p.kind === 'ceoDesk')) ? 'disabled' : ''}>
-          <img src="${itemIcon(f.kind)}" alt="" /><span class="tile-name">${f.title}</span>
-        </button></li>`)}
-      <li data-key="department">
-        <button class="catalog-tile ${zone ? 'selected' : ''}" data-action="build-pick" data-id="department" title="Ein Bereich mit eigenem Team, Budget und Wissen.">
-          <img src="${itemIcon('department')}" alt="" /><span class="tile-name">Abteilung</span>
-        </button></li>
-    </ul>
-    ${roomSection(s, room, wallsLow)}
+    ${CATALOG_GROUPS.map((group) => {
+      // Wie in einem Bauspiel: nach Zweck geordnet. Das Raum-Werkzeug und Abteilungen sind keine Möbel, gehören aber dazu.
+      const entries = group.kinds.flatMap((kind) => {
+        if (kind === 'roomwalls') return [{ kind, title: 'Raum', blurb: 'Zwei Ecken klicken, und vier Wände stehen.' }];
+        if (kind === 'department') return [{ kind, title: 'Abteilung', blurb: 'Ein Bereich mit eigenem Team, Budget und Wissen.' }];
+        const f = FURNITURE.find((x) => x.kind === kind);
+        return f ? [{ kind: f.kind as string, title: f.title, blurb: f.blurb }] : [];
+      });
+      return html`<h4 class="catalog-group" data-key="group-${group.id}">${group.title}</h4>
+      <ul class="catalog catalog-grid" data-key="grid-${group.id}">
+        ${entries.map((e) => html`<li data-key="${e.kind}">
+          <button class="catalog-tile ${e.kind === buildKind && !moving && !fromInventory ? 'selected' : ''}" data-action="build-pick" data-id="${e.kind}" title="${e.blurb}" ${(e.kind === 'ceoDesk' && [...company.placed, ...(company.inventory ?? [])].some((p) => p.kind === 'ceoDesk')) ? 'disabled' : ''}>
+            <img src="${itemIcon(e.kind)}" alt="" /><span class="tile-name">${e.title}</span>
+          </button></li>`)}
+      </ul>`;
+    })}
+    ${roomSection(s, room, wallsLow, paintColor)}
     ${atHead ? buildingSection(s) : html`<p class="hint" data-key="anbau-hinweis">Anbauen geht vorerst nur am Firmensitz.</p>`}
     ${company.departments.length ? html`<section class="detail" data-key="zones">
       <h3>Abteilungen</h3>
@@ -2271,7 +2328,7 @@ export function buildPanel(s: Snapshot, buildKind: string | null, moving: boolea
 }
 
 /** Räume aus Wänden und Türen bekommen hier Zweck und Namen. */
-function roomSection(s: Snapshot, room: RoomNaming | null, wallsLow = false): Safe {
+function roomSection(s: Snapshot, room: RoomNaming | null, wallsLow = false, paintColor: string | null = null): Safe {
   const zones = s.company.zones ?? [];
   const title = (kind: string) => ZONE_KINDS.find((z) => z.kind === kind)?.title ?? kind;
   const form = room?.target
@@ -2290,6 +2347,11 @@ function roomSection(s: Snapshot, room: RoomNaming | null, wallsLow = false): Sa
   return html`<section class="detail" data-key="rooms">
     <h3>Räume</h3>
     <button class="btn btn-small" data-action="toggle-walls">${wallsLow ? 'Wände hochschalten' : 'Wände herunterschalten'}</button>
+    <div class="paint-row" data-key="paint"><span>Wände streichen</span>
+      ${WALL_COLORS.map((c) => html`<button class="paint-swatch ${paintColor === c.id ? 'selected' : ''}" data-action="paint-pick" data-id="${c.id}" title="${c.title}" aria-label="${c.title}" style="background:${c.hex}"></button>`)}
+      ${paintColor ? html`<button class="btn btn-small" data-action="paint-stop">Fertig</button>` : null}
+    </div>
+    ${paintColor ? html`<p class="hint">Klicke Wände an, um sie zu streichen. <kbd>Esc</kbd> beendet das.</p>` : null}
     ${form}
     ${zones.length ? html`<ul class="dept-list">${zones.map((z) => html`<li data-key="${z.id}">
       <span><span class="dept-dot" style="background:${ZONE_COLORS[z.kind]}"></span> ${z.name}, ${title(z.kind)}${floorOf(z) ? `, ${floorName(floorOf(z))}` : ''}</span>

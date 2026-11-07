@@ -10,6 +10,18 @@ export const isScrumMaster = (agent: Agent) => agent.roleId === 'scrum' || /scru
 export const scrumMaster = (company: Pick<Company, 'agents'>): Agent | null =>
   company.agents.find((a) => a.hired && !a.firedAt && isScrumMaster(a)) ?? null;
 
+export const isProductOwner = (agent: Agent) => agent.roleId === 'po' || /product owner/i.test(agentTitle(agent));
+
+export const productOwner = (company: Pick<Company, 'agents'>): Agent | null =>
+  company.agents.find((a) => a.hired && !a.firedAt && isProductOwner(a)) ?? null;
+
+/** Wer das Planning hält: der Scrum Master, sonst der Product Owner. */
+export const sprintPlanner = (company: Pick<Company, 'agents'>): Agent | null => scrumMaster(company) ?? productOwner(company);
+
+/** Das Backlog in der Reihenfolge des Product Owners. Noch nicht Eingeordnetes kommt danach, in der alten Reihenfolge. */
+export const byRank = <T extends { rank?: number }>(items: T[]): T[] =>
+  items.map((item, index) => ({ item, index })).sort((a, b) => (a.item.rank ?? 1e9) - (b.item.rank ?? 1e9) || a.index - b.index).map((x) => x.item);
+
 /** Es läuft immer nur ein Sprint. */
 export const openSprint = (company: Pick<Company, 'sprints'>): Sprint | null => (company.sprints ?? []).find((s) => s.status !== 'closed') ?? null;
 

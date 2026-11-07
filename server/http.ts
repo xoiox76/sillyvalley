@@ -301,6 +301,12 @@ async function route(engine: Engine, req: IncomingMessage, res: ServerResponse, 
     if (parts.length === 3 && method === 'POST') return sendJson(res, 201, await engine.adoptProjectAgent(id, await readJson(req)));
   }
 
+  if (section === 'backlog' && parts.length === 3 && method === 'POST') {
+    await readJson(req);
+    await engine.orderBacklog(id);
+    return sendJson(res, 200, {});
+  }
+
   if (section === 'sprints') {
     if (parts.length === 3 && method === 'POST') return sendJson(res, 201, await engine.planSprint(id, await readJson(req)));
     const action = parts[4];
@@ -403,6 +409,14 @@ async function route(engine: Engine, req: IncomingMessage, res: ServerResponse, 
 
   if (section === 'mandates') {
     if (parts.length === 3 && method === 'POST') return sendJson(res, 201, await engine.startMandate(id, await readJson(req)));
+    if (parts.length === 5 && parts[4] === 'budget' && method === 'POST') {
+      await engine.decideBudget(id, parts[3], await readJson(req));
+      return sendJson(res, 202, {});
+    }
+    if (parts.length === 6 && parts[4] === 'strategies' && method === 'POST') {
+      engine.answerStrategy(id, parts[3], parts[5], await readJson(req));
+      return sendJson(res, 202, {});
+    }
     if (parts.length === 5 && method === 'POST') {
       await readJson(req);
       if (parts[4] === 'plan') await engine.planMandate(id, parts[3]);
@@ -452,6 +466,10 @@ async function route(engine: Engine, req: IncomingMessage, res: ServerResponse, 
     }
     if (parts.length === 5 && parts[4] === 'store' && method === 'POST') {
       engine.storeItem(id, parts[3]);
+      return sendJson(res, 200, {});
+    }
+    if (parts.length === 5 && parts[4] === 'paint' && method === 'POST') {
+      engine.paintItem(id, parts[3], await readJson(req));
       return sendJson(res, 200, {});
     }
   }

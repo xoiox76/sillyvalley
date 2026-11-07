@@ -138,6 +138,12 @@ export const SKILLS: SkillInfo[] = [
       'Texte: Schreibe kurze Sätze in aktiver Sprache. Sprich die Lesenden direkt an. Streiche jedes Wort, das nichts beiträgt.',
   },
   {
+    id: 'backlog',
+    title: 'Backlog',
+    blurb: 'Ordnet Aufgaben nach Wert und Dringlichkeit.',
+    instruction: 'Backlog: Ordne die Zettel so, dass oben steht, was dem Produkt jetzt am meisten bringt. Dringlich ist, was andere blockiert oder einen Fehler behebt, den Nutzer spüren. Begründe jede Einordnung in einem Satz.',
+  },
+  {
     id: 'scrum',
     title: 'Scrum',
     blurb: 'Plant Sprints und moderiert Retrospektiven.',
@@ -223,6 +229,16 @@ export const ROLES: RoleInfo[] = [
     criteria: ['Jedes Kriterium ist einzeln bewertet', 'Jede Bewertung hat eine Begründung', 'Mängel sind konkret und umsetzbar'],
   },
   {
+    id: 'po',
+    title: 'Product Owner',
+    blurb: 'Ordnet das Backlog nach Dringlichkeit und hält das Planning mit dem Team.',
+    instruction: 'Du bist Product Owner. Du hältst das Backlog geordnet, damit das Team immer am Wichtigsten arbeitet, und planst mit dem Team, was als Nächstes umgesetzt wird. Was gebaut wird, entscheiden die Stakeholder und die Firmenleitung.',
+    skillIds: ['backlog'],
+    modelId: 'claude-haiku-5-5',
+    top: '#4f9fd8',
+    criteria: ['Jeder Zettel hat eine Dringlichkeit', 'Jede Einordnung ist begründet', 'Oben steht, was andere blockiert'],
+  },
+  {
     id: 'scrum',
     title: 'Scrum Master',
     blurb: 'Plant Sprints aus dem Backlog und moderiert die Retrospektive.',
@@ -244,9 +260,9 @@ export const ROLES: RoleInfo[] = [
   },
   {
     id: 'fuehrung',
-    title: 'Führung',
-    blurb: 'Macht aus Zielen Aufträge und verteilt sie im Team.',
-    instruction: 'Du führst ein Team. Du machst aus Zielen kleine, prüfbare Aufträge und gibst sie an die, die sie am besten können.',
+    title: 'Manager',
+    blurb: 'Stakeholder mit eigenem Budget. Entscheidet selbst, was umgesetzt wird.',
+    instruction: 'Du bist Manager und Stakeholder. Du entscheidest selbst, was in deinem Budget umgesetzt wird, machst daraus kleine, prüfbare Aufträge und gibst sie an die, die sie am besten können. Die Firmenleitung fragst du nur nach mehr Budget, und Strategievorschläge stimmst du mit ihr ab.',
     skillIds: ['fuehrung'],
     modelId: 'claude-sonnet-5-5',
     top: '#c9a227',
@@ -333,6 +349,17 @@ export const PROPS: (FurnitureInfo & { kind: PropKind; w: number; d: number })[]
   { kind: 'lockers', title: 'Spinde', blurb: '', cost: 0, size: '2 × 1 Felder', w: 2, d: 1 },
   { kind: 'sofa', title: 'Sofa', blurb: '', cost: 0, size: '1 × 2 Felder', w: 1, d: 2 },
 ];
+
+/** Farben zum Anstreichen von Wänden. Die erste ist der Grundton. */
+export const WALL_COLORS: { id: string; title: string; hex: string }[] = [
+  { id: 'weiss', title: 'Weiß', hex: '#d9dee6' },
+  { id: 'sand', title: 'Sand', hex: '#d8c8a8' },
+  { id: 'salbei', title: 'Salbei', hex: '#a9c3a6' },
+  { id: 'himmel', title: 'Himmel', hex: '#a8c4dc' },
+  { id: 'koralle', title: 'Koralle', hex: '#e0a090' },
+  { id: 'anthrazit', title: 'Anthrazit', hex: '#5a6270' },
+];
+export const wallColor = (id: string | undefined): string => WALL_COLORS.find((c) => c.id === id)?.hex ?? WALL_COLORS[0].hex;
 
 export const isProp = (kind: FurnitureKind): kind is PropKind => PROPS.some((p) => p.kind === kind);
 

@@ -7,9 +7,9 @@ import * as git from './git.ts';
 import { randomInt, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { DEFAULT_CEO, LOOK_OPTIONS, DEPARTMENT_COLORS, FURNITURE, LOCATIONS, isProp, staffOf, MODELS, ROLES, RULES, SKILLS, commandRisks, furnitureByKind, locationById, modelById, roleById, skillById } from '../shared/catalog.ts';
+import { DEFAULT_CEO, LOOK_OPTIONS, DEPARTMENT_COLORS, FURNITURE, LOCATIONS, isProp, staffOf, MODELS, ROLES, RULES, SKILLS, commandRisks, furnitureByKind, locationById, modelById, roleById, skillById, WALL_COLORS } from '../shared/catalog.ts';
 import type { Settings } from './settings.ts';
-import { openSprint, scrumMaster, sprintCommitted, sprintRows } from '../shared/scrum.ts';
+import { byRank, openSprint, productOwner, sprintCommitted, sprintPlanner, sprintRows } from '../shared/scrum.ts';
 import { checkDepartment, checkPlacement, deskDepartment, inBounds, isEdgeKind } from '../shared/layout.ts';
 import { FLOOR_STYLES, ZONE_KINDS, isSeparateRoom, meetingRooms, zoneAt } from '../shared/zones.ts';
 import { SITE_STEP, baseFloorOf, siteAt, storeyOf, buildLimits, buildingAt, checkShaft, floorOf, isShaft, itemsOnFloor, roomAt, roomOf, shaftLanding } from '../shared/building.ts';
@@ -23,7 +23,7 @@ import type {
 import { emptyUsage } from '../shared/types.ts';
 import type { FxSource } from './fx.ts';
 import {
-  DECISIONS_FILE, languageRule, ORDER_STATE, parsePlanning, planningPrompt, planningSchema, retroNotes, agentProfile, checkPrompt, commandFeedback, continuePrompt, contractText, decisionEntry, interviewPrompt, jobUpdate, managePrompt, manageSchema, mandateFile, meetingPrompt,
+  DECISIONS_FILE, languageRule, ORDER_STATE, parsePlanning, planningPrompt, planningSchema, backlogPrompt, backlogSchema, parseBacklog, retroNotes, agentProfile, checkPrompt, commandFeedback, continuePrompt, contractText, decisionEntry, interviewPrompt, jobUpdate, managePrompt, manageSchema, mandateFile, meetingPrompt,
   meetingProtocol, meetingSchema, parseMeetingTurn, parsePlan, parseVerdict, planPrompt, reworkPrompt, revisionPrompt, speakingOrder, stageLabel,
   verdictReport, verdictSchema, workPrompt, type Briefing, HANDOVER_RULES, NOTE_RULES, colleagueLine, handoverDeniedNote, handoverNote, helpFeedback, helpPrompt, helpRules,
 } from './prompts.ts';
@@ -1645,11 +1645,11 @@ export class Engine {
   /** Das Planning ist ein echter Lauf des Scrum Masters. Er schlägt nur vor. */
   async planSprint(companyId: string, input: { budgetEur?: number; hint?: string }): Promise<Sprint> {
     const company = this.require(companyId);
-    const master = scrumMaster(company);
-    if (!master) throw new GameError('Für Sprints braucht die Firma einen Scrum Master.');
+    const master = sprintPlanner(company);
+    if (!master) throw new GameError('Für Sprints braucht die Firma einen Scrum Master oder einen Product Owner.');
     if (openSprint(company)) throw new GameError('Es läuft schon ein Sprint. Schliesse ihn zuerst ab.');
     if (this.busy(company, master.id)) throw new GameError(`${master.name} arbeitet gerade. Warte, bis die Arbeit fertig ist.`);
-    const backlog = company.board.filter((n) => n.status === 'open');
+    const backlog = byRank(company.board.filter((n) => n.status === 'open'));
     if (!backlog.length) throw new GameError('Das Backlog ist leer. Hänge zuerst Zettel an die Tafel.');
     const budgetEur = round2(input.budgetEur ?? 0);
     if (!(budgetEur > 0)) throw new GameError('Ein Sprint braucht einen Budgetrahmen über 0 €.');
@@ -1674,6 +1674,38 @@ export class Engine {
       jsonSchema: planningSchema(backlog.map((n) => n.id)), structuredLabel: 'plant den Sprint',
     });
     return sprint;
+  }
+
+  /** Der Product Owner ordnet das Backlog. Er liest nur; Reihenfolge und Dringlichkeit landen an den Zetteln. */
+  async orderBacklog(companyId: string): Promise<void> {
+    const company = this.require(companyId);
+    const owner = productOwner(company);
+    if (!owner) throw new GameError('Das Backlog ordnet ein Product Owner. Stelle zuerst einen ein.');
+    if (this.busy(company, owner.id)) throw new GameError(`${owner.name} arbeitet gerade. Warte, bis die Arbeit fertig ist.`);
+    const backlog = company.board.filter((n) => n.status === 'open');
+    if (!backlog.length) throw new GameError('Das Backlog ist leer. Hänge zuerst Zettel an die Tafel.');
+    const departmentId = this.departmentOfAgent(company, owner)?.id ?? null;
+    const limitEur = RULES.planningLimitEur;
+    this.assertCanSpend(company, limitEur, { departmentId });
+    await this.startRun(company, owner, {
+      kind: 'backlog', orderId: null, departmentId, limitEur, readOnly: true,
+      prompt: backlogPrompt({ backlog, team: company.agents.filter((a) => a.hired && !a.firedAt), customSkills: company.customSkills }),
+      jsonSchema: backlogSchema(backlog.map((n) => n.id)), structuredLabel: 'ordnet das Backlog',
+    });
+  }
+
+  private finishBacklog(company: Company, owner: Agent, run: Run, structured: unknown): void {
+    const open = company.board.filter((n) => n.status === 'open');
+    const order = run.status === 'success' ? parseBacklog(structured, open.map((n) => n.id)) : null;
+    if (order) {
+      order.items.forEach((item, rank) => Object.assign(company.board.find((n) => n.id === item.id)!, { rank, urgency: item.urgency, urgencyReason: item.reason }));
+      // Was der Product Owner nicht eingeordnet hat, rückt ans Ende.
+      for (const note of open) if (!order.items.some((i) => i.id === note.id)) delete note.rank;
+      this.notify(company, 'info', `${owner.name} hat das Backlog geordnet.${order.summary ? ` ${order.summary}` : ''}`);
+    } else {
+      this.notify(company, 'error', run.status === 'success' ? 'Das Backlog war nicht auswertbar.' : run.error ?? 'Das Ordnen wurde abgebrochen.');
+    }
+    this.setIdleOrPending(company, owner);
   }
 
   private finishPlanning(company: Company, master: Agent, run: Run, structured: unknown): void {
@@ -1751,8 +1783,9 @@ export class Engine {
     const sprint = this.sprintOf(company, sprintId);
     if (sprint.status !== 'review') throw new GameError('Eine Retrospektive gibt es, wenn der Sprint beendet ist.');
     if (sprint.retroMeetingId) throw new GameError('Die Retrospektive hat schon stattgefunden.');
-    const master = scrumMaster(company);
-    if (!master) throw new GameError('Für die Retrospektive braucht die Firma einen Scrum Master.');
+    // Die Retrospektive moderiert der Scrum Master. Gibt es keinen, der Product Owner.
+    const master = sprintPlanner(company);
+    if (!master) throw new GameError('Für die Retrospektive braucht die Firma einen Scrum Master oder einen Product Owner.');
     const rows = sprintRows(company, sprint);
     const active = (id: string) => company.agents.some((a) => a.id === id && a.hired && !a.firedAt);
     const workers = rows.flatMap((r) => r.order?.stages.map((stage) => stage.agentId) ?? []).filter(active);
@@ -2275,7 +2308,14 @@ export class Engine {
     const prompt = managePrompt(mandate, {
       manager, team, department: company.departments.find((d) => d.id === mandate.departmentId) ?? null, freeEur: free, orderLines,
       round: mandate.rounds.length + 1, hasDecisions: fs.existsSync(path.join(this.workspaceOf(company.id), DECISIONS_FILE)), projectDir: company.projectDir ?? null,
-      customSkills: company.customSkills, companyRoles: company.roles, teamNote: (() => {
+      customSkills: company.customSkills, companyRoles: company.roles,
+      strategyLines: (mandate.strategies ?? []).map((st) => `${st.title}: ${st.status === 'pending' ? 'noch offen' : st.status === 'accepted' ? 'angenommen' : 'abgelehnt'}${st.answer ? `. Antwort: ${st.answer}` : ''}`),
+      budgetLine: mandate.budgetRequest
+        ? mandate.budgetRequest.status === 'pending' ? `Deine Bitte um ${euro(mandate.budgetRequest.eur)} mehr Budget liegt noch bei der Firmenleitung.`
+          : mandate.budgetRequest.status === 'approved' ? `Die Firmenleitung hat ${euro(mandate.budgetRequest.eur)} mehr Budget freigegeben.`
+          : `Die Firmenleitung hat deine Bitte um ${euro(mandate.budgetRequest.eur)} mehr Budget abgelehnt. Plane mit dem, was da ist.`
+        : '',
+      teamNote: (() => {
         const t = company.teams.find((x) => x.id === mandate.teamId);
         return t ? `Die Firmenleitung hat dieses Projekt dem Team "${t.name}" gegeben.${t.purpose ? ` Sein Zweck: ${t.purpose}` : ''}` : '';
       })(),
@@ -2303,6 +2343,16 @@ export class Engine {
     }
     const round = mandate.rounds.length + 1;
     mandate.rounds.push({ round, runId: run.id, at: Date.now(), summary: plan.summary, open: plan.open, done: plan.done });
+    // Nur zwei Dinge legt der Manager der Firmenleitung vor: eine Bitte um Budget und einen Strategievorschlag.
+    if (plan.budgetEur > 0 && mandate.budgetRequest?.status !== 'pending') {
+      mandate.budgetRequest = { id: `b${shortId()}`, round, eur: round2(plan.budgetEur), reason: plan.budgetReason, status: 'pending', at: Date.now() };
+      this.notify(company, 'info', `${manager.name} bittet um ${euro(mandate.budgetRequest.eur)} mehr Budget für "${mandate.goal}".${plan.budgetReason ? ` ${plan.budgetReason}` : ''}`);
+    }
+    if (plan.strategy) {
+      mandate.strategies ??= [];
+      mandate.strategies.push({ id: `t${shortId()}`, round, title: plan.strategy.title, text: plan.strategy.text, status: 'pending', answer: '', at: Date.now() });
+      this.notify(company, 'info', `${manager.name} möchte eine Strategie mit dir klären: "${plan.strategy.title}".`);
+    }
     const team = this.mandateTeam(company, mandate);
     const byName = (name: string) => team.find((a) => a.name.toLowerCase() === name.toLowerCase()) ?? null;
     let free = this.mandateFree(company, mandate);
@@ -2459,6 +2509,47 @@ export class Engine {
   }
 
   /** Abschließen gibt den nicht zugeteilten Rest des Budgets frei. Laufende Aufträge laufen weiter. */
+  /** Mehr Budget für ein Projekt: Der Manager hat darum gebeten, die Firmenleitung entscheidet. Mit dem Geld plant er gleich weiter. */
+  async decideBudget(companyId: string, mandateId: string, input: { decision: 'approve' | 'decline' }): Promise<void> {
+    const company = this.require(companyId);
+    const mandate = this.mandateOf(company, mandateId);
+    const request = mandate.budgetRequest;
+    if (!request || request.status !== 'pending') throw new GameError('Es liegt keine Bitte um Budget vor.');
+    if (mandate.status === 'closed') throw new GameError('Dieses Projekt ist abgeschlossen.');
+    if (input?.decision === 'approve') {
+      this.assertCanSpend(company, request.eur, { departmentId: mandate.departmentId });
+      // Hat der Manager bisher alles selbst entschieden, gilt das auch für das neue Geld.
+      const decidesAll = mandate.selfStartUpToEur >= mandate.budgetEur - 1e-9;
+      mandate.budgetEur = round2(mandate.budgetEur + request.eur);
+      if (decidesAll) mandate.selfStartUpToEur = mandate.budgetEur;
+      request.status = 'approved';
+    } else if (input?.decision === 'decline') {
+      request.status = 'declined';
+    } else {
+      throw new GameError('Gib das Budget frei oder lehne ab.');
+    }
+    this.writeMandateFile(company, mandate);
+    this.touch(company);
+    // Weiterplanen geht nur, wenn nichts mehr offen liegt. Sonst plant der Manager, sobald du über das Offene entschieden hast.
+    if (request.status !== 'approved' || mandate.status !== 'active' || this.busy(company, mandate.managerId)) return;
+    if (mandate.proposals.some((p) => p.status === 'pending') || mandate.contracts.some((c) => c.status === 'pending')) return;
+    await this.planMandate(companyId, mandateId);
+  }
+
+  /** Die Firmenleitung antwortet auf einen Strategievorschlag. Der Manager sieht die Antwort in seiner nächsten Planungsrunde. */
+  answerStrategy(companyId: string, mandateId: string, strategyId: string, input: { decision: 'accept' | 'decline'; answer?: string }): void {
+    const company = this.require(companyId);
+    const mandate = this.mandateOf(company, mandateId);
+    const strategy = (mandate.strategies ?? []).find((s) => s.id === strategyId);
+    if (!strategy) throw new GameError('Diesen Strategievorschlag gibt es nicht.', 404);
+    if (strategy.status !== 'pending') throw new GameError('Darauf hast du schon geantwortet.');
+    if (input?.decision !== 'accept' && input?.decision !== 'decline') throw new GameError('Nimm den Vorschlag an oder lehne ihn ab.');
+    strategy.status = input.decision === 'accept' ? 'accepted' : 'declined';
+    strategy.answer = String(input.answer ?? '').trim().slice(0, 600);
+    this.writeMandateFile(company, mandate);
+    this.touch(company);
+  }
+
   closeMandate(companyId: string, mandateId: string): void {
     const company = this.require(companyId);
     const mandate = this.mandateOf(company, mandateId);
@@ -2594,6 +2685,19 @@ export class Engine {
     const item = this.removablePlaced(company, itemId);
     company.placed = company.placed.filter((p) => p !== item);
     company.inventory.push({ id: item.id, kind: item.kind, at: Date.now() });
+    this.touch(company);
+  }
+
+  /** Eine Wand oder Fensterwand anstreichen. */
+  paintItem(companyId: string, itemId: string, input: { color: string }): void {
+    const company = this.require(companyId);
+    const item = company.placed.find((p) => p.id === itemId);
+    if (!item) throw new GameError('Dieses Möbelstück gibt es nicht.', 404);
+    if (item.kind !== 'wall' && item.kind !== 'window') throw new GameError('Anstreichen kannst du Wände und Fensterwände.');
+    const color = WALL_COLORS.find((c) => c.id === input?.color);
+    if (!color) throw new GameError('Diese Farbe gibt es nicht.');
+    if (color.id === WALL_COLORS[0].id) delete item.color;
+    else item.color = color.id;
     this.touch(company);
   }
 
@@ -2979,6 +3083,7 @@ export class Engine {
     else if (run.kind === 'manage') this.finishManage(company, agent, run, end.structured);
     else if (run.kind === 'help') this.finishHelp(company, agent, run);
     else if (run.kind === 'planning') this.finishPlanning(company, agent, run, end.structured);
+    else if (run.kind === 'backlog') this.finishBacklog(company, agent, run, end.structured);
     else this.finishStage(company, agent, run, end.structured);
     this.persistNow(company);
     // Jemand ist frei geworden: Vielleicht wartet eine Stufe auf genau diesen Agenten.
@@ -3132,6 +3237,9 @@ export class Engine {
     }
   }
 }
+
+/** Ein Betrag, wie ihn die Firmenleitung liest. */
+const euro = (n: number) => `${n.toFixed(2).replace('.', ',')} €`;
 
 function assertRotation(rot: unknown): void {
   if (rot !== 0 && rot !== 1 && rot !== 2 && rot !== 3) throw new GameError('Ein Möbelstück lässt sich nur in vier Richtungen drehen.');

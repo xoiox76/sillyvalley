@@ -691,3 +691,15 @@ kbd { font: inherit; padding: 0 5px; background: var(--raised); border: 1px soli
 .settings-group > summary::before { content: '▸ '; }
 .settings-group[open] > summary::before { content: '▾ '; }
 .world-map-scale { position: absolute; left: 12px; bottom: 44px; height: 8px; border: 2px solid #eef2f5; border-top: none; color: #eef2f5; font-size: 16px; line-height: 16px; background: rgba(14, 27, 44, .78); padding: 0 4px; pointer-events: none; white-space: nowrap; }
+
+.zettel-urgency { display: inline-block; margin-top: 2px; padding: 0 4px; font-size: 14px; line-height: 1.2; border: 1px solid currentColor; }
+.urgency-hoch { color: #b3261e; }
+.urgency-mittel { color: #7a5a00; }
+.urgency-niedrig { color: #3c6db5; }
+
+.catalog-group { margin: 10px 0 4px; font-size: 16px; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; }
+
+.paint-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: 8px 0 4px; }
+.paint-row > span { color: var(--muted); font-size: 16px; margin-right: 4px; }
+.paint-swatch { width: 24px; height: 24px; border: 2px solid var(--line); cursor: pointer; padding: 0; }
+.paint-swatch.selected { border-color: var(--mint); outline: 2px solid var(--mint); }

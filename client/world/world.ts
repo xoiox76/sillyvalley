@@ -1,7 +1,7 @@
 // Die lebende Spielwelt. Zeichnet ausschließlich, was der Server-Stand vorgibt:
 // Wohin eine Figur geht und was sie tut, leitet sich aus ihrem echten Zustand ab.
 
-import { DEFAULT_CEO, LOCATIONS, isProp, locationById, staffOf } from '../../shared/catalog.ts';
+import { DEFAULT_CEO, LOCATIONS, isProp, locationById, staffOf, wallColor } from '../../shared/catalog.ts';
 import { withoutEszett, show } from '../ui/html.ts';
 import { noteEdge, noteLook } from '../../shared/board.ts';
 import { quotaClosedUntil } from '../../shared/quota.ts';
@@ -11,7 +11,7 @@ import { noteTaker, wallNotes, type BoardNote } from '../../shared/board.ts';
 import {
   MEETING_SIZE, blockedEdges, blockedSet, checkDepartment, checkPlacement, findPath, footprint, inBounds, meetingDoor, occupiedTiles, seatOf, standingTile,
   type Rect, type Seat, type Tile,
-  wallSides, isEdgeKind, onBackWall,
+  wallSides, isEdgeKind, onBackWall, rectWalls,
 } from '../../shared/layout.ts';
 import { LOUNGE_SPOTS, ZONE_COLORS, roomSeats, zoneTiles } from '../../shared/zones.ts';
 import type { Agent, Company, Department, FloorStyle, FurnitureKind, HelpRequest, PropKind, LiveKind, Meeting, PlacedItem, PlanStatus, Rotation, Shaft, ZoneKind } from '../../shared/types.ts';
@@ -47,6 +47,8 @@ export type Ghost =
   | { kind: FurnitureKind; id?: string; i: number; j: number; rot: Rotation; run?: WallEdge[] }
   /** Ein Abteilungsbereich beim Abstecken. */
   | { kind: 'zone'; id?: string; i: number; j: number; w: number; d: number }
+  /** Das Raum-Werkzeug: vier Wände rund um ein Rechteck. */
+  | { kind: 'roomwalls'; id?: undefined; i: number; j: number; w: number; d: number }
   /** Ein Raum aus Wänden, der benannt werden soll. tiles: die Felder als "i,j". ok: ob er ein eigener Raum ist. */
   | { kind: 'room'; id?: undefined; i: number; j: number; tiles: string[]; ok: boolean };
 
@@ -1730,7 +1732,7 @@ export class World {
       return;
     }
     if (isEdgeKind(item.kind)) {
-      const sprite = edgeSprite(item.kind, item.rot, this.wallsLow);
+      const sprite = edgeSprite(item.kind, item.rot, this.wallsLow, wallColor(item.color));
       items.push({ depth: item.i + item.j + 0.5, draw: () => this.drawSprite(ctx, sprite, at()) });
       return;
     }
@@ -1941,6 +1943,25 @@ export class World {
   }
 
   private drawGhost(ctx: Ctx, pen: Pen, ghost: Ghost, tick: number): void {
+    if (ghost.kind === 'roomwalls') {
+      // Jede Kante innerhalb des Büros wird zur Wand. Kanten am Rand des Gebäudes bleiben, wie sie sind.
+      const loc = this.location();
+      const inside = (t: Tile) => t.i >= 0 && t.j >= 0 && t.i < loc.w && t.j < loc.d;
+      ctx.save();
+      ctx.globalAlpha = 0.72 + (tick % 6 < 3 ? 0.08 : 0);
+      for (const edge of rectWalls(ghost)) {
+        const [a, b] = wallSides(edge);
+        if (!inside(a) || !inside(b)) continue;
+        const { i, j } = edge;
+        const strip = edge.rot === 0
+          ? [pen.pt(i, j - 0.1), pen.pt(i + 1, j - 0.1), pen.pt(i + 1, j + 0.1), pen.pt(i, j + 0.1)]
+          : [pen.pt(i - 0.1, j), pen.pt(i - 0.1, j + 1), pen.pt(i + 0.1, j + 1), pen.pt(i + 0.1, j)];
+        fillPoly(ctx, strip, '#5eeac0');
+        this.drawSprite(ctx, edgeSprite('wall', edge.rot, this.wallsLow), pen.pt(i, j));
+      }
+      ctx.restore();
+      return;
+    }
     if (ghost.kind === 'room') {
       const tiles = ghost.tiles.map((k) => k.split(',').map(Number) as [number, number]);
       this.tintTiles(ctx, pen, tiles, ghost.ok ? '#5eeac0' : '#e5534b', 0.28 + (tick % 6 < 3 ? 0.06 : 0));

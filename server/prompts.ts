@@ -384,6 +384,10 @@ export interface ManageContext {
   companyRoles?: CompanyRole[];
   /** Das Team, auf das der Mensch das Vorhaben begrenzt hat. */
   teamNote?: string;
+  /** Strategievorschläge und was die Firmenleitung dazu gesagt hat. */
+  strategyLines?: string[];
+  /** Was aus der letzten Bitte um Budget wurde. */
+  budgetLine?: string;
 }
 
 const money = (n: number) => `${n.toFixed(2).replace('.', ',')} €`;
@@ -407,6 +411,9 @@ export function managePrompt(mandate: Mandate, c: ManageContext): string {
     c.orderLines.length ? `\nStand der bisherigen Aufträge dieses Vorhabens:\n${bullets(c.orderLines)}` : '',
     `\nVerbleibendes Budget des Vorhabens: ${money(c.freeEur)}. Die Limits aller Aufträge, die du jetzt vorschlägst, dürfen zusammen nicht darüber liegen. Zur Orientierung: Ein kurzer Auftrag für Haiku kostet oft unter 0,05 €, für Sonnet etwa 0,10 bis 0,50 €. Prüfung und Planung kosten zusätzlich.`,
     `Freigabe-Stufe: ${approval}`,
+    c.budgetLine ? c.budgetLine : '',
+    c.strategyLines?.length ? `\nDeine Strategievorschläge und die Antworten der Firmenleitung:\n${bullets(c.strategyLines)}` : '',
+    '\nDu bist Stakeholder dieses Projekts und entscheidest selbst, was umgesetzt wird. Die Firmenleitung fragst du nur in zwei Fällen: Reicht das Budget für das Ziel nicht, nenne in "budget_anfrage" den Betrag in Euro und die Begründung. Willst du die Richtung des Projekts oder der Firma ändern, schreibe den Vorschlag in "strategie". Sonst ist der Betrag 0 und die Texte bleiben leer.',
     c.hasDecisions ? `Die Firma hat Beschlüsse gefasst, siehe ${DECISIONS_FILE}.` : '',
     `\nZerlege das Ziel in höchstens ${RULES.maxProposals} Aufträge, die jemand aus dem Team direkt bearbeiten kann. Jeder Auftrag braucht Abnahmekriterien, die die Firmenleitung am Ergebnis prüfen kann. Planung und Prüfung sind je Auftrag optional und kosten extra. Wer arbeitet, darf nicht selbst prüfen.`,
     'Baue auf dem Stand bisheriger Aufträge auf und wiederhole nichts, was schon abgenommen ist. Ist das Ziel erreicht oder lässt sich im Budget nichts Sinnvolles mehr tun, schlage nichts vor und setze "fertig".',
@@ -422,11 +429,23 @@ export function manageSchema(teamNames: string[], companyRoleTitles: string[] = 
   return {
     type: 'object',
     additionalProperties: false,
-    required: ['zusammenfassung', 'fertig', 'offen', 'auftraege', 'einstellungen'],
+    required: ['zusammenfassung', 'fertig', 'offen', 'auftraege', 'einstellungen', 'budget_anfrage', 'strategie'],
     properties: {
       zusammenfassung: { type: 'string' },
       fertig: { type: 'boolean' },
       offen: { type: 'string' },
+      budget_anfrage: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['eur', 'begruendung'],
+        properties: { eur: { type: 'number' }, begruendung: { type: 'string' } },
+      },
+      strategie: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['titel', 'vorschlag'],
+        properties: { titel: { type: 'string' }, vorschlag: { type: 'string' } },
+      },
       einstellungen: {
         type: 'array',
         maxItems: RULES.maxContracts,
@@ -491,6 +510,10 @@ export interface ParsedPlan {
   open: string;
   proposals: ParsedProposal[];
   hires: ParsedHire[];
+  /** 0: Der Manager braucht kein weiteres Budget. */
+  budgetEur: number;
+  budgetReason: string;
+  strategy: { title: string; text: string } | null;
 }
 
 /** Nimmt nur, was wirklich geliefert wurde. Namen prüft die Engine gegen das Team, Beträge gegen das Budget. */
@@ -511,9 +534,16 @@ export function parsePlan(structured: unknown): ParsedPlan | null {
     const skillTitles = Array.isArray(h.faehigkeiten) ? h.faehigkeiten.map(text).filter(Boolean) : [];
     return [{ name: text(h.name), roleTitle: text(h.rolle), modelLabel: text(h.modell), skillTitles, reason: text(h.begruendung) }];
   });
+  // Ältere oder ungehorsame Antworten haben die neuen Felder nicht. Dann gibt es eben keine Anfrage.
+  const budget = (raw.budget_anfrage ?? {}) as Record<string, unknown>;
+  const budgetEur = typeof budget.eur === 'number' && Number.isFinite(budget.eur) && budget.eur > 0 ? budget.eur : 0;
+  const strategyRaw = (raw.strategie ?? {}) as Record<string, unknown>;
+  const strategyTitle = text(strategyRaw.titel).slice(0, 120);
   return {
     summary: raw.zusammenfassung.trim(), done: raw.fertig === true, open: text(raw.offen),
     proposals: proposals.slice(0, RULES.maxProposals), hires: hires.slice(0, RULES.maxContracts),
+    budgetEur, budgetReason: text(budget.begruendung).slice(0, 600),
+    strategy: strategyTitle ? { title: strategyTitle, text: text(strategyRaw.vorschlag).slice(0, 1500) } : null,
   };
 }
 
@@ -657,13 +687,13 @@ export interface PlanningContext {
   hasDecisions: boolean;
 }
 
-/** Das Planning: Der Scrum Master liest nur und schlägt vor. Gestartet wird dadurch nichts. */
+/** Das Planning: Scrum Master oder Product Owner lesen nur und schlagen vor. Gestartet wird dadurch nichts. */
 export function planningPrompt(c: PlanningContext): string {
-  const line = (n: BoardItem) => `${n.id}: ${n.title}${n.role ? ` (passt zu: ${n.role})` : ''}${n.notes ? `. ${n.notes}` : ''}${n.criteria.length ? `. Abnahme: ${n.criteria.join('; ')}` : ''}`;
+  const line = (n: BoardItem) => `${n.id}: ${n.title}${n.urgency ? ` [Dringlichkeit: ${n.urgency}]` : ''}${n.role ? ` (passt zu: ${n.role})` : ''}${n.notes ? `. ${n.notes}` : ''}${n.criteria.length ? `. Abnahme: ${n.criteria.join('; ')}` : ''}`;
   return join([
     `Sprint ${c.number} planen. Budgetrahmen: ${money(c.budgetEur)}.`,
     c.hint ? `\nHinweis der Firmenleitung:\n${c.hint}` : '',
-    `\nBacklog, nur diese Zettel kannst du wählen:\n${bullets(c.backlog.map(line))}`,
+    `\nBacklog in der Reihenfolge des Product Owners, nur diese Zettel kannst du wählen:\n${bullets(c.backlog.map(line))}`,
     `\nTeam:\n${bullets(c.team.map((a) => colleagueLine(a, c.customSkills)))}`,
     c.history.length ? `\nBisherige Sprints:\n${bullets(c.history)}` : '',
     c.hasDecisions ? `\nDie Firma hat Beschlüsse gefasst, auch aus Retrospektiven, siehe ${DECISIONS_FILE}.` : '',
@@ -691,6 +721,59 @@ export function parsePlanning(structured: unknown, noteIds: string[]): { goal: s
   if (!plan || typeof plan.ziel !== 'string' || !plan.ziel.trim() || !Array.isArray(plan.zettel)) return null;
   const chosen = [...new Set(plan.zettel.filter((id): id is string => typeof id === 'string' && noteIds.includes(id)))].slice(0, RULES.sprintNotesMax);
   return { goal: plan.ziel.trim().slice(0, 300), reason: typeof plan.begruendung === 'string' ? plan.begruendung.trim().slice(0, 600) : '', noteIds: chosen };
+}
+
+/** Backlog ordnen: Der Product Owner liest die offenen Zettel und legt Reihenfolge und Dringlichkeit fest. */
+export function backlogPrompt(c: { backlog: BoardItem[]; team: Agent[]; customSkills: CustomSkill[] }): string {
+  const line = (n: BoardItem) => `${n.id}: ${n.title}${n.role ? ` (passt zu: ${n.role})` : ''}${n.notes ? `. ${n.notes}` : ''}`;
+  return join([
+    'Ordne das Backlog.',
+    `\nOffene Zettel:\n${bullets(c.backlog.map(line))}`,
+    `\nTeam:\n${bullets(c.team.map((a) => colleagueLine(a, c.customSkills)))}`,
+    '\nBringe alle Zettel in eine Reihenfolge: oben, was dem Produkt jetzt am meisten bringt. Gib jedem eine Dringlichkeit: hoch, mittel oder niedrig. "begruendung" ist ein Satz je Zettel, "zusammenfassung" zwei Sätze an die Firmenleitung.',
+    'Du kannst Dateien im Arbeitsbereich lesen, aber nichts ändern und nichts starten. Was umgesetzt wird, entscheiden Stakeholder und Firmenleitung.',
+  ]);
+}
+
+export function backlogSchema(noteIds: string[]): object {
+  return {
+    type: 'object',
+    additionalProperties: false,
+    required: ['zusammenfassung', 'reihenfolge'],
+    properties: {
+      zusammenfassung: { type: 'string' },
+      reihenfolge: {
+        type: 'array',
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['zettel', 'dringlichkeit', 'begruendung'],
+          properties: {
+            zettel: { type: 'string', enum: noteIds },
+            dringlichkeit: { type: 'string', enum: ['hoch', 'mittel', 'niedrig'] },
+            begruendung: { type: 'string' },
+          },
+        },
+      },
+    },
+  };
+}
+
+/** Nur was im Backlog liegt, zählt, und jeder Zettel nur einmal. */
+export function parseBacklog(structured: unknown, noteIds: string[]): { summary: string; items: { id: string; urgency: 'hoch' | 'mittel' | 'niedrig'; reason: string }[] } | null {
+  const raw = structured as { zusammenfassung?: unknown; reihenfolge?: unknown } | null;
+  if (!raw || !Array.isArray(raw.reihenfolge)) return null;
+  const seen = new Set<string>();
+  const items: { id: string; urgency: 'hoch' | 'mittel' | 'niedrig'; reason: string }[] = [];
+  for (const entry of raw.reihenfolge as { zettel?: unknown; dringlichkeit?: unknown; begruendung?: unknown }[]) {
+    const id = typeof entry?.zettel === 'string' ? entry.zettel : '';
+    if (!noteIds.includes(id) || seen.has(id)) continue;
+    seen.add(id);
+    const urgency = entry.dringlichkeit === 'hoch' || entry.dringlichkeit === 'niedrig' ? entry.dringlichkeit : 'mittel';
+    items.push({ id, urgency, reason: typeof entry.begruendung === 'string' ? entry.begruendung.trim().slice(0, 300) : '' });
+  }
+  if (!items.length) return null;
+  return { summary: typeof raw.zusammenfassung === 'string' ? raw.zusammenfassung.trim().slice(0, 600) : '', items };
 }
 
 /** Worum es in der Retrospektive geht: der echte Stand des Sprints. */

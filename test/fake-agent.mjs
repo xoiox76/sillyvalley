@@ -87,6 +87,13 @@ if (parsedSchema?.properties.beitrag) {
   emit({ type: 'result', subtype: 'success', is_error: false, result: JSON.stringify(turn), structured_output: scenario === 'beitragkaputt' ? null : turn, num_turns: 1, duration_ms: 30, total_cost_usd: cost, modelUsage, usage: USAGE, permission_denials: [] });
   process.exit(0);
 }
+if (parsedSchema?.properties.reihenfolge) {
+  // Backlog ordnen: umgekehrte Reihenfolge, der erste wird dringend. "backlogkaputt" ist unbrauchbar.
+  const ids = [...parsedSchema.properties.reihenfolge.items.properties.zettel.enum].reverse();
+  const order = { zusammenfassung: 'Zuerst das, was blockiert.', reihenfolge: ids.map((id, n) => ({ zettel: id, dringlichkeit: n === 0 ? 'hoch' : 'niedrig', begruendung: n === 0 ? 'Blockiert andere.' : 'Kann warten.' })) };
+  emit({ type: 'result', subtype: 'success', is_error: false, result: JSON.stringify(order), structured_output: scenario === 'backlogkaputt' ? null : order, num_turns: 1, duration_ms: 30, total_cost_usd: cost, modelUsage, usage: USAGE, permission_denials: [] });
+  process.exit(0);
+}
 if (parsedSchema?.properties.ziel) {
   // Planning des Scrum Masters. "planningkaputt" ist unbrauchbar.
   const ids = parsedSchema.properties.zettel.items.enum;
@@ -106,7 +113,10 @@ if (parsedSchema?.properties.auftraege) {
   // "managervertrag" schlägt eine Einstellung vor, "managervertragkaputt" eine mit unbekannter Rolle.
   const hires = scenario === 'managervertrag' ? [{ name: 'Sam', rolle: 'Text und Marke', modell: 'Haiku 5.5', faehigkeiten: ['Texte'], begruendung: 'Niemand im Team schreibt.' }]
     : scenario === 'managervertragkaputt' ? [{ name: 'Sam', rolle: 'Zauberei', modell: 'Haiku 5.5', faehigkeiten: [], begruendung: '' }] : [];
-  const plan = { zusammenfassung: `Planung der Attrappe, Runde für ${sessionId.slice(0, 4)}.`, fertig: scenario === 'managerfertig', offen: '', auftraege: proposals, einstellungen: hires };
+  // "managerbudget" bittet um mehr Geld, "managerstrategie" legt einen Strategievorschlag vor.
+  const budget = scenario === 'managerbudget' ? { eur: 1, begruendung: 'Das Ziel braucht noch eine Runde.' } : { eur: 0, begruendung: '' };
+  const strategy = scenario === 'managerstrategie' ? { titel: 'Erst mobil', vorschlag: 'Wir bauen zuerst die Handy-Version.' } : { titel: '', vorschlag: '' };
+  const plan = { zusammenfassung: `Planung der Attrappe, Runde für ${sessionId.slice(0, 4)}.`, fertig: scenario === 'managerfertig', offen: '', auftraege: proposals, einstellungen: hires, budget_anfrage: budget, strategie: strategy };
   emit({ type: 'result', subtype: 'success', is_error: false, result: JSON.stringify(plan), structured_output: scenario === 'managerkaputt' ? null : plan, num_turns: 1, duration_ms: 30, total_cost_usd: cost, modelUsage, usage: USAGE, permission_denials: [] });
   process.exit(0);
 }
