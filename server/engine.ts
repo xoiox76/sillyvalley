@@ -12,6 +12,7 @@ import type { Settings } from './settings.ts';
 import { byRank, openSprint, productOwner, sprintCommitted, sprintPlanner, sprintRows } from '../shared/scrum.ts';
 import { checkDepartment, checkPlacement, deskDepartment, inBounds, isEdgeKind } from '../shared/layout.ts';
 import { FLOOR_STYLES, ZONE_KINDS, isSeparateRoom, meetingRooms, zoneAt } from '../shared/zones.ts';
+import { BUSINESS_CASE_FILE, VISION_FILE, businessCaseHolds, businessCaseMarkdown, cleanBusinessCase, cleanVision, visionMarkdown } from '../shared/vision.ts';
 import { SITE_STEP, baseFloorOf, siteAt, storeyOf, buildLimits, buildingAt, checkShaft, floorOf, isShaft, itemsOnFloor, roomAt, roomOf, shaftLanding } from '../shared/building.ts';
 import { CITIES, HOME_ROOMS, parcelById, parcelOfLocation, placeById, startTown, teamFor, teamForFloor, teamSize } from '../shared/town.ts';
 import type {
@@ -476,7 +477,7 @@ export class Engine {
     return real;
   }
 
-  createCompany(input: { name: string; idea: string; locationId: LocationId; budgetEur: number; projectDir?: string | null }): Company {
+  createCompany(input: { name: string; idea: string; locationId: LocationId; budgetEur: number; projectDir?: string | null; vision?: unknown; businessCase?: unknown }): Company {
     const name = input.name?.trim();
     const idea = input.idea?.trim();
     if (!name) throw new GameError('Gib deiner Firma einen Namen.');
@@ -498,6 +499,9 @@ export class Engine {
     const workspace = this.workspaceOf(id);
     ensureWorkspace(workspace);
     fs.writeFileSync(path.join(workspace, 'wissen', 'idee.md'), `# ${name}\n\n${idea}\n${projectDir ? `\nDie Firma arbeitet an dem bestehenden Projekt unter ${projectDir}.\n` : ''}`);
+    company.vision = cleanVision(input.vision);
+    company.businessCase = cleanBusinessCase(input.businessCase);
+    this.writeCharter(company);
     this.companies.set(id, company);
     this.persistNow(company);
     // Ein Git-Repo wird gleich als solches verbunden. So arbeitet von Anfang an jeder Auftrag auf einem eigenen Branch.
@@ -523,7 +527,57 @@ export class Engine {
         : 'Das Budget kann nicht unter den bereits verbrauchten und reservierten Betrag sinken.');
     }
     company.budgetEur = round2(budgetEur);
+    this.writeCharter(company);
+    this.checkBusinessCase(company);
     this.touch(company);
+  }
+
+  /* ---------- Produktvision und Business Case ---------- */
+
+  /** Vision und Business Case liegen als Dateien im Firmenwissen. Fehlt einer, fehlt auch die Datei. */
+  private writeCharter(company: Company): void {
+    const workspace = this.workspaceOf(company.id);
+    const write = (file: string, content: string | null) => {
+      const full = path.join(workspace, file);
+      if (content === null) fs.rmSync(full, { force: true });
+      else {
+        fs.mkdirSync(path.dirname(full), { recursive: true });
+        fs.writeFileSync(full, content);
+      }
+    };
+    write(VISION_FILE, company.vision ? visionMarkdown(company.name, company.vision) : null);
+    write(BUSINESS_CASE_FILE, company.businessCase ? businessCaseMarkdown(company.name, company.businessCase, company.budgetEur) : null);
+  }
+
+  setCharter(companyId: string, input: { vision?: unknown; businessCase?: unknown }): void {
+    const company = this.require(companyId);
+    if ('vision' in input) company.vision = cleanVision(input.vision);
+    if ('businessCase' in input) company.businessCase = cleanBusinessCase(input.businessCase, company.businessCase ?? null);
+    this.writeCharter(company);
+    this.checkBusinessCase(company);
+    this.touch(company);
+  }
+
+  /** Nach dem Erreichen der Schwelle entscheidest du: weiter. Anhalten heißt, einfach nichts Neues zu starten. */
+  confirmBusinessCase(companyId: string): void {
+    const company = this.require(companyId);
+    const bc = company.businessCase;
+    if (!bc || bc.reachedAt === null) throw new GameError('Es gibt nichts zu bestätigen.');
+    bc.confirmedAt = Date.now();
+    this.notify(company, 'info', 'Business Case geprüft: Die Arbeit geht weiter.');
+    this.touch(company);
+  }
+
+  /** Prüft die Schwelle des Business Case gegen den echten Verbrauch. Meldet sich nur einmal. */
+  private checkBusinessCase(company: Company): void {
+    const bc = company.businessCase;
+    if (!bc || bc.reachedAt !== null || !(company.budgetEur > 0)) return;
+    const used = this.money(company).spentEur / company.budgetEur;
+    if (used * 100 + 1e-9 < bc.warnPercent) return;
+    bc.reachedAt = Date.now();
+    this.notify(company, 'error', bc.limitAction === 'anhalten'
+      ? `Business Case: ${bc.warnPercent} % des KI-Budgets sind verbraucht. Neue Arbeit hält an, bis du unter Finanzen entscheidest.`
+      : `Business Case: ${bc.warnPercent} % des KI-Budgets sind verbraucht. Prüfe, ob der Nutzen die Kosten noch trägt.`);
   }
 
   /* ---------- Abteilungen ---------- */
@@ -672,6 +726,9 @@ export class Engine {
     // Ist die Anthropic-CLI weg, arbeiten verbundene Anbieter trotzdem. Das Limit prüft dann der jeweilige Lauf.
     if (!this.providerInfo.available && !this.settings?.models().length) {
       throw new GameError(this.providerInfo.error ?? 'Der KI-Anbieter ist nicht erreichbar.', 503);
+    }
+    if (businessCaseHolds(company.businessCase)) {
+      throw new GameError(`Der Business Case hält neue Arbeit an: ${company.businessCase!.warnPercent} % des KI-Budgets sind belegt. Entscheide unter Finanzen, ob es weitergeht.`);
     }
     // Vor dem Anlegen prüfen, nicht erst beim Start: Sonst bliebe ein Auftrag ohne Lauf zurück.
     if (company.projectDir && !fs.existsSync(company.projectDir)) {
@@ -2688,6 +2745,21 @@ export class Engine {
     this.touch(company);
   }
 
+  /** Einen Arbeitsplatz zuweisen. Sitzt dort schon jemand, tauschen die beiden. Die Abteilung folgt dem Schreibtisch. */
+  assignDesk(companyId: string, agentId: string, input: { deskId: string }): void {
+    const company = this.require(companyId);
+    const agent = company.agents.find((a) => a.id === agentId && a.hired && !a.firedAt);
+    if (!agent) throw new GameError('Diese Person arbeitet nicht hier.', 404);
+    const desk = company.placed.find((p) => p.id === input?.deskId && p.kind === 'desk');
+    if (!desk) throw new GameError('Diesen Schreibtisch gibt es nicht.', 404);
+    if (agent.deskId === desk.id) return;
+    const other = company.agents.find((a) => a.id !== agent.id && a.hired && !a.firedAt && a.deskId === desk.id);
+    if (other) other.deskId = agent.deskId;
+    agent.deskId = desk.id;
+    this.notify(company, 'info', other ? `${agent.name} und ${other.name} tauschen die Plätze.` : `${agent.name} sitzt jetzt an einem anderen Platz.`);
+    this.touch(company);
+  }
+
   /** Eine Wand oder Fensterwand anstreichen. */
   paintItem(companyId: string, itemId: string, input: { color: string }): void {
     const company = this.require(companyId);
@@ -3057,6 +3129,7 @@ export class Engine {
       files: [...changedFiles(this.agentRoots(company), before), ...this.branchFiles(company, run)],
     });
     this.appendLedger(company, run);
+    this.checkBusinessCase(company);
     if (end.sessionCostUsd !== null) agent.sessionCostUsd = end.sessionCostUsd;
     // Nur was wirklich in der Session angekommen ist, gilt als mitgeteilt. Sonst steht es im nächsten Lauf noch einmal da.
     if (run.status === 'success') {

@@ -1,4 +1,5 @@
 import type { ModelInfo } from './catalog.ts';
+import type { BusinessCase, ProductVision } from './vision.ts';
 // Datenmodell einer Firma. Der Server ist die einzige Quelle der Wahrheit;
 // der Client zeichnet nur, was hier steht.
 
@@ -703,6 +704,10 @@ export interface Company {
   departments: Department[];
   /** Benannte Räume. Ältere Spielstände haben noch keine. */
   zones?: Zone[];
+  /** Wohin das Produkt soll. Optional. */
+  vision?: ProductVision | null;
+  /** Was es bringen soll und ab wann entschieden wird. Optional. */
+  businessCase?: BusinessCase | null;
   customSkills: CustomSkill[];
   roles: CompanyRole[];
   /** Du selbst als Figur. Fehlt es, gilt die Vorgabe. */

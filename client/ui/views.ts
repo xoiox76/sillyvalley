@@ -4,7 +4,7 @@ import { languageSwitch } from './language.ts';
 import { locale } from '../i18n/translate.ts';
 import {
   DEFAULT_CEO, FURNITURE, staffOf, LOOK_OPTIONS, MODELS, PRICES_AS_OF, PROVIDERS, ROLES, RULES, SKILLS, costFromUsage, furnitureByKind,
-  BASE_CONTEXT_TOKENS, agentTitle, estimateStepUsd, estimateTokensOfChars, locationById, modelById, roleById, skillById, skillTitle, WALL_COLORS } from '../../shared/catalog.ts';
+  BASE_CONTEXT_TOKENS, agentTitle, estimateStepUsd, estimateTokensOfChars, locationById, modelById, roleById, skillById, skillTitle, WALL_COLORS, SKILL_AREAS, TASK_BLOCKS, SENIORITY, type SkillArea } from '../../shared/catalog.ts';
 import { deskDepartment } from '../../shared/layout.ts';
 import { FLOOR_STYLES, ZONE_COLORS, ZONE_KINDS, meetingRooms } from '../../shared/zones.ts';
 import { NOTE_COLORS, boardNotes, noteLook, roleColor, type BoardNote } from '../../shared/board.ts';
@@ -22,6 +22,7 @@ import type { FileEntry } from './api.ts';
 import { api } from './api.ts';
 import { ORDER_STATUS, RUN_KIND, RUN_STATUS, count, duration, eur, eurFree, eurFrom, fxNote, percent, time, untilTime, usd } from './format.ts';
 import { Safe, html } from './html.ts';
+import { businessCaseSection, visionSection } from './charter.ts';
 
 export interface HireDraft {
   roleId: string;
@@ -37,6 +38,10 @@ export interface HireDraft {
   customSkills: { key: string; title: string; instruction: string; source: CustomSkill['source'] }[];
   /** Zeichenzahl von Titel, Aufgabe und Anforderungen, für die Anzeige von Kontext und Kosten. */
   textChars: Record<string, number>;
+  /** Baukasten für eine eigene Stelle: Bereich, Aufgaben-Bausteine, Erfahrung. */
+  area: SkillArea | null;
+  taskIds: string[];
+  seniority: string;
   skillError: string;
   error: string;
   busy: boolean;
@@ -407,11 +412,41 @@ function ceoSection(s: Snapshot): Safe {
 const rolesOf = (company: Company): CompanyRole[] => company.roles ?? [];
 
 /** Fähigkeiten auswählen oder neu anlegen. Gleich beim Einstellen und beim Definieren einer Rolle. */
-function skillsField(firm: CustomSkill[], draft: Pick<HireDraft, 'skillIds' | 'customSkills' | 'skillError'>): Safe {
+/** Aufgabe und Anforderungen aus dem Baukasten. Freitext kommt nur dazu, wenn der Mensch ihn ergänzt. */
+export function jobFromKit(draft: Pick<HireDraft, 'taskIds' | 'seniority'>): { task: string; requirements: string } {
+  const task = draft.taskIds.map((id) => TASK_BLOCKS.find((b) => b.id === id)?.text).filter(Boolean).join(' ');
+  const requirements = SENIORITY.find((s) => s.id === draft.seniority)?.text ?? '';
+  return { task, requirements };
+}
+
+/** Eigene Stelle als Baukasten: Bereich, Aufgaben, Erfahrung. Text nur, wo nichts passt. */
+function jobKit(draft: HireDraft): Safe {
+  const blocks = TASK_BLOCKS.filter((b) => b.area === draft.area);
+  return html`<fieldset class="field" data-key="kit-area"><legend>Bereich</legend>
+      <div class="toggle-row">${SKILL_AREAS.map((a) => html`<button type="button" class="toggle ${draft.area === a.id ? 'on' : ''}" data-action="hire-area" data-id="${a.id}" data-key="${a.id}" aria-pressed="${draft.area === a.id}">${a.title}</button>`)}</div>
+    </fieldset>
+    <fieldset class="field" data-key="kit-tasks"><legend>Aufgaben</legend>
+      ${draft.area ? html`<div class="toggle-row">${blocks.map((b) => html`<button type="button" class="toggle ${draft.taskIds.includes(b.id) ? 'on' : ''}" data-action="hire-task" data-id="${b.id}" data-key="${b.id}" aria-pressed="${draft.taskIds.includes(b.id)}">${b.text}</button>`)}</div>
+        <p class="hint">Ein Baustein wählt die passenden Fähigkeiten gleich mit.</p>` : html`<p class="hint">Wähle zuerst einen Bereich.</p>`}
+    </fieldset>
+    <fieldset class="field" data-key="kit-seniority"><legend>Erfahrung</legend>
+      <div class="toggle-row">${SENIORITY.map((s) => html`<button type="button" class="toggle ${draft.seniority === s.id ? 'on' : ''}" data-action="hire-seniority" data-id="${s.id}" data-key="${s.id}" title="${s.text}" aria-pressed="${draft.seniority === s.id}">${s.title}</button>`)}</div>
+    </fieldset>
+    <details class="skill-add" data-key="kit-free"><summary>Eigene Ergänzung (optional)</summary>
+      <label class="field"><span>Weitere Aufgabe</span><textarea name="jobTask" data-measure="task" rows="2" maxlength="${RULES.jobTextMax}"></textarea></label>
+      <label class="field"><span>Weitere Anforderungen</span><textarea name="jobRequirements" data-measure="requirements" rows="2" maxlength="${RULES.jobTextMax}"></textarea></label>
+    </details>`;
+}
+
+function skillsField(firm: CustomSkill[], draft: Pick<HireDraft, 'skillIds' | 'customSkills' | 'skillError'> & { area?: SkillArea | null }): Safe {
+  // Nach Bereichen gruppiert, der gewählte Bereich zuerst. Eigene Fähigkeiten der Firma stehen am Ende.
+  const areas = [...SKILL_AREAS].sort((a, b) => Number(b.id === draft.area) - Number(a.id === draft.area));
+  const toggle = (skill: { id: string; title: string; blurb?: string; instruction: string }) => html`<button type="button" class="toggle ${draft.skillIds.includes(skill.id) ? 'on' : ''}" data-action="hire-skill" data-id="${skill.id}" data-key="${skill.id}" title="${'blurb' in skill && skill.blurb ? skill.blurb : skill.instruction.slice(0, 120)}">${skill.title}</button>`;
   return html`<fieldset class="field"><legend>Fähigkeiten</legend>
-    <div class="toggle-row">
-      ${[...SKILLS, ...firm].map((skill) => html`<button type="button" class="toggle ${draft.skillIds.includes(skill.id) ? 'on' : ''}" data-action="hire-skill" data-id="${skill.id}" data-key="${skill.id}" title="${'blurb' in skill ? skill.blurb : 'Eigene Fähigkeit der Firma'}" aria-pressed="${draft.skillIds.includes(skill.id)}">${skill.title}</button>`)}
-    </div>
+    ${areas.map((area) => html`<div class="skill-group" data-key="skills-${area.id}"><small class="skill-group-title">${area.title}</small>
+      <div class="toggle-row">${SKILLS.filter((s) => s.area === area.id).map(toggle)}</div></div>`)}
+    ${firm.length ? html`<div class="skill-group" data-key="skills-firm"><small class="skill-group-title">Eigene der Firma</small><div class="toggle-row">${firm.map(toggle)}</div></div>` : null}
+
     ${draft.customSkills.length ? html`<ul class="custom-skills">${draft.customSkills.map((skill) => html`<li data-key="${skill.key}">
       <span><strong>${skill.title}</strong> <small>${skill.source === 'datei' ? 'Datei' : 'beschrieben'}, rund ${tokenCount(estimateTokensOfChars(skill.instruction.length))} Tokens</small></span>
       <button type="button" class="icon-btn" data-action="hire-skill-remove" data-id="${skill.key}" aria-label="${skill.title} entfernen">×</button>
@@ -423,6 +458,7 @@ function skillsField(firm: CustomSkill[], draft: Pick<HireDraft, 'skillIds' | 'c
       <div class="btn-row"><button type="button" class="btn btn-small" data-action="hire-skill-add">Hinzufügen</button>
         <label class="btn btn-small">Markdown-Datei wählen<input class="visually-hidden" type="file" accept=".md,.markdown,.txt,text/markdown,text/plain" data-action="hire-skill-file" /></label></div>
       ${draft.skillError ? html`<p class="form-error" role="alert">${draft.skillError}</p>` : null}
+      <p class="hint">Auch eine SKILL.md im offenen Agent-Skills-Format passt: Name und Beschreibung kommen aus ihrem Kopf. Übernommen wird nur der Text, keine Skripte und keine Zusatzdateien aus der Skill-Mappe.</p>
       <p class="hint">Sie landet wörtlich im Profil und wird bei jedem Lauf mitgelesen. Nimm nur Dateien, denen du vertraust. Die festen Grenzen gelten trotzdem: nur der Arbeitsbereich, keine Befehle, nichts nach außen.</p>
     </details>
   </fieldset>`;
@@ -682,6 +718,23 @@ export function meetingModal(s: Snapshot, draft: MeetingDraft): Safe {
     </form>`;
 }
 
+/** Arbeitsplatz wählen: jeder Schreibtisch mit Etage, Abteilung und wer dort sitzt. Ein besetzter Platz bedeutet Tausch. */
+function deskField(company: Company, agent: Agent): Safe {
+  const desks = company.placed.filter((p) => p.kind === 'desk');
+  if (desks.length < 2) return html``;
+  const label = (desk: (typeof desks)[number], index: number) => {
+    const sitter = company.agents.find((a) => a.hired && !a.firedAt && a.deskId === desk.id);
+    const department = deskDepartment(company.departments, desk);
+    const where = [floorOf(desk) ? floorName(floorOf(desk)) : '', department?.name ?? ''].filter(Boolean).join(', ');
+    const who = sitter?.id === agent.id ? 'aktueller Platz' : sitter ? `${sitter.name}, tauschen` : 'frei';
+    return `Platz ${index + 1}${where ? ` (${where})` : ''}: ${who}`;
+  };
+  return html`<form class="desk-form" data-form="assign-desk" data-id="${agent.id}" data-key="desk-${agent.id}">
+    <label class="field"><span>Arbeitsplatz</span><select name="desk">${desks.map((desk, index) => html`<option value="${desk.id}" ${desk.id === agent.deskId ? 'selected' : ''}>${label(desk, index)}</option>`)}</select></label>
+    <button class="btn btn-small">Zuweisen</button>
+  </form>`;
+}
+
 function agentDetail(s: Snapshot, agent: Agent): Safe {
   const { company } = s;
   const run = activeRun(company, agent.id);
@@ -694,6 +747,7 @@ function agentDetail(s: Snapshot, agent: Agent): Safe {
         <button class="btn" data-action="open-mandate" data-manager="${agent.id}" ${run || !agent.hired ? 'disabled' : ''}>Projekt geben</button>
         ${run ? html`<button class="btn" data-action="stop-run" data-id="${run.id}">Stoppen</button>` : null}
       </div>
+      ${agent.hired ? deskField(company, agent) : null}
       ${workHistory(company, agent)}
       <h4>Gespräch</h4>
       <ul class="chat">
@@ -1323,7 +1377,8 @@ export function hireModal(s: Snapshot, draft: HireDraft): Safe {
   const role = roleById(draft.roleId)!;
   const firm = s.company.customSkills;
   const defined = rolesOf(s.company).find((r) => r.id === draft.companyRoleId) ?? null;
-  const chars = defined ? defined.title.length + defined.task.length + defined.requirements.length : Object.values(draft.textChars).reduce((sum, n) => sum + n, 0);
+  const kit = jobFromKit(draft);
+  const chars = defined ? defined.title.length + defined.task.length + defined.requirements.length : Object.values(draft.textChars).reduce((sum, n) => sum + n, 0) + (role.id === 'frei' ? kit.task.length + kit.requirements.length : 0);
   const skillText = draft.customSkills.reduce((sum, skill) => sum + skill.instruction.length, 0)
     + firm.filter((skill) => draft.skillIds.includes(skill.id)).reduce((sum, skill) => sum + skill.instruction.length, 0);
   const added = estimateTokensOfChars(chars + skillText);
@@ -1352,8 +1407,9 @@ export function hireModal(s: Snapshot, draft: HireDraft): Safe {
           </div>
         </fieldset>
         <label class="field" data-key="job-title"><span>Stellentitel (optional)</span><input name="jobTitle" data-measure="title" maxlength="60" autocomplete="off" placeholder="${role.id === 'frei' ? 'Zum Beispiel: Newsletter-Redaktion' : role.title}" /></label>
+        ${role.id === 'frei' ? jobKit(draft) : html`
         <label class="field" data-key="job-task"><span>Konkrete Aufgabe</span><textarea name="jobTask" data-measure="task" rows="3" maxlength="${RULES.jobTextMax}" placeholder="Wofür ist diese Person da? Zum Beispiel: Du betreust den monatlichen Newsletter für Vereinsvorstände."></textarea></label>
-        <label class="field" data-key="job-req"><span>Anforderungen (optional)</span><textarea name="jobRequirements" data-measure="requirements" rows="2" maxlength="${RULES.jobTextMax}" placeholder="Was muss die Person mitbringen oder beachten?"></textarea></label>
+        <label class="field" data-key="job-req"><span>Anforderungen (optional)</span><textarea name="jobRequirements" data-measure="requirements" rows="2" maxlength="${RULES.jobTextMax}" placeholder="Was muss die Person mitbringen oder beachten?"></textarea></label>`}
         ${skillsField(firm, draft)}`}
         <fieldset class="field"><legend>Modell und Gehalt</legend>
           <div class="model-table" role="radiogroup" aria-label="Modell">
@@ -1987,6 +2043,7 @@ export function projectsPanel(s: Snapshot, orderId: string | null, mandateId: st
     <div class="panel-head"><h2>Projekte</h2><span class="panel-sub">${company.orders.length === 1 ? '1 Auftrag' : `${company.orders.length} Aufträge`}</span></div>
     <button class="btn ${company.orders.length ? '' : 'btn-primary'} btn-wide" data-action="open-order" ${anyone ? '' : 'disabled'}>Auftrag planen</button>
     ${!anyone ? html`<p class="hint">Stelle zuerst jemanden ein. Aufträge bearbeiten echte Mitarbeiter.</p>` : null}
+    ${visionSection(company)}
     ${commandsSection(s)}
     ${boardSection(s, noteId, boardDepartment)}
     ${anyone || company.mandates.length ? mandatesSection(s, mandateId) : null}
@@ -2127,6 +2184,7 @@ export function financePanel(s: Snapshot): Safe {
         <button class="btn btn-small">Budget ändern</button>
       </form>
     </section>
+    ${businessCaseSection(company, money)}
     <div class="note">
       ${billing === 'api' ? html`<strong>Über API-Schlüssel abgerechnet.</strong> <span>Diese Beträge werden dir tatsächlich berechnet.</span>`
         : billing === 'test' ? html`<strong>Test-Attrappe.</strong> <span>Diese Beträge sind nicht echt.</span>`

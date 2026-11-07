@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { BASE_CONTEXT_TOKENS, LOCATIONS, MODELS, RULES, agentTitle, isProp, commandRisks, costFromUsage, estimateStepUsd, locationById, modelById } from '../shared/catalog.ts';
 import { blockedEdges, blockedSet, checkPlacement, findPath, footprint, meetingDoor, meetingSeats, rectWalls, regionOf, standingTile } from '../shared/layout.ts';
 import type { Look } from '../shared/types.ts';
+import { BUSINESS_CASE_FILE, VISION_FILE } from '../shared/vision.ts';
 import { Engine } from '../server/engine.ts';
 import { meetingRooms } from '../shared/zones.ts';
 import { FxSource, parseEcb } from '../server/fx.ts';
@@ -2691,6 +2692,38 @@ test('Scrum: Planning, Freigabe, Board, Ende, Retrospektive', async () => {
   assert.equal(openSprint(company), null);
 });
 
+test('Arbeitsplätze zuweisen: auf einen freien Platz oder im Tausch', async () => {
+  const company = newCompany();
+  addDesk(company.id, 4, 1);
+  const mila = await hired(company.id, 'Mila');
+  const alex = await hired(company.id, 'Alex');
+  const free = engine.placeItem(company.id, { kind: 'desk', i: 4, j: 3, rot: 0 });
+  const milaDesk = mila.deskId;
+  const alexDesk = alex.deskId;
+  engine.assignDesk(company.id, mila.id, { deskId: free.id });
+  assert.equal(mila.deskId, free.id, 'Auf den freien Platz');
+  engine.assignDesk(company.id, mila.id, { deskId: alexDesk });
+  assert.equal(mila.deskId, alexDesk);
+  assert.equal(alex.deskId, free.id, 'Alex rückt auf Milas bisherigen Platz');
+  assert.ok(milaDesk !== mila.deskId);
+  assert.throws(() => engine.assignDesk(company.id, mila.id, { deskId: 'weg' }), /Schreibtisch/);
+  assert.throws(() => engine.assignDesk(company.id, 'niemand', { deskId: free.id }), /arbeitet nicht hier/);
+});
+
+test('Baukasten: eine eigene Stelle mit Fähigkeiten aus Entwicklung und Finanzen', async () => {
+  const company = newCompany();
+  const dev = await engine.hire(company.id, {
+    name: 'Ben', roleId: 'frei', skillIds: ['backend', 'datenbank', 'tests', 'budgetplanung'], modelId: 'claude-haiku-5-5', look: LOOK,
+    job: { title: 'Backend', task: 'Baut APIs und Datenmodelle.', requirements: 'Arbeitet selbstständig und schlägt Verbesserungen vor.' },
+  } as never);
+  await until(() => dev.hired, 'Einstellung');
+  const profile = agentProfile(company, dev);
+  assert.match(profile, /Baut APIs und Datenmodelle/);
+  assert.match(profile, /Backend: Entwirf Schnittstellen/);
+  assert.match(profile, /Budget und Forecast: Plane/);
+  assert.match(profile, /Arbeitet selbstständig/);
+});
+
 test('Product Owner: ordnet das Backlog nach Dringlichkeit und hält das Planning ohne Scrum Master', async () => {
   const company = newCompany();
   const eins = engine.createNote(company.id, { title: 'Eins' });
@@ -2891,4 +2924,45 @@ test('Eine Stadt bekommt beim ersten Besuch ihre Zufallszahl und behält sie', (
   engine.visitCity(company.id, wild.id);
   assert.ok((company.town.citySalts?.[wild.id] ?? 0) > 0, 'Auch Städte in der offenen Welt');
   assert.throws(() => engine.visitCity(company.id, 'gibtsnicht'), /Diese Stadt gibt es nicht/);
+});
+
+test('Produktvision: bei der Gründung gewählt, als Datei im Wissen und im Profil jedes Agenten', async () => {
+  const company = engine.createCompany({
+    name: 'Visionsfirma', idea: 'Vereinsverwaltung', locationId: 'garage', budgetEur: 10,
+    vision: { productType: 'webapp', audiences: ['vereine', 'erfunden'], problem: 'Mitgliederlisten sind verstreut.', successIds: ['nutzer'], successNote: '20 Vereine', nonGoals: 'Keine Buchhaltung' },
+  });
+  assert.deepEqual(company.vision?.audiences, ['vereine'], 'Unbekannte Auswahl fällt weg');
+  assert.equal(company.businessCase, null, 'Ohne Angaben kein Business Case');
+  const file = fs.readFileSync(path.join(engine.workspaceOf(company.id), VISION_FILE), 'utf8');
+  assert.match(file, /Produkt: Web-App/);
+  assert.match(file, /Für: Vereine und Verwaltung/);
+  assert.match(file, /Erfolg heißt: Aktive Nutzer: 20 Vereine/);
+  const agent = await hired(company.id);
+  const profile = agentProfile(company, agent);
+  assert.match(profile, /Produktvision/);
+  assert.match(profile, /Bewusst nicht: Keine Buchhaltung/);
+  engine.setCharter(company.id, { vision: {} });
+  assert.equal(company.vision, null);
+  assert.ok(!fs.existsSync(path.join(engine.workspaceOf(company.id), VISION_FILE)), 'Ohne Vision keine Datei');
+  assert.doesNotMatch(agentProfile(company, agent), /Produktvision/);
+});
+
+test('Business Case: Ab der Schwelle hält neue Arbeit an, bis die Firmenleitung weitermacht', async () => {
+  const company = newCompany();
+  const agent = await hired(company.id);
+  engine.setCharter(company.id, { businessCase: { benefit: 'Spart Zeit', revenueEurMonth: 200, warnPercent: 50, limitAction: 'anhalten' } });
+  assert.equal(company.businessCase?.reachedAt, null, 'Noch kaum etwas verbraucht');
+  assert.match(fs.readFileSync(path.join(engine.workspaceOf(company.id), BUSINESS_CASE_FILE), 'utf8'), /Erwarteter Erlös: 200,00 €/);
+  // Die Attrappe kostet fast nichts. Ein teurer Lauf füllt das Budget über die Hälfte.
+  company.runs[0].costEur = 6;
+  engine.setBudget(company.id, 10);
+  assert.ok(company.businessCase?.reachedAt, 'Schwelle erreicht');
+  assert.ok(company.notices.some((n) => /Business Case: 50 %/.test(n.text)));
+  await assert.rejects(engine.startOrder(company.id, orderInput(agent.id, 'Weiter', { limitEur: 0.0001 })), /Business Case hält neue Arbeit an/);
+  engine.confirmBusinessCase(company.id);
+  await assert.rejects(engine.startOrder(company.id, orderInput(agent.id, 'Weiter', { limitEur: 5 })), /reicht nicht/, 'Danach gilt wieder nur das Budget');
+  // Eine höhere Schwelle setzt die Prüfung zurück.
+  engine.setCharter(company.id, { businessCase: { benefit: 'Spart Zeit', warnPercent: 90, limitAction: 'warnen' } });
+  assert.equal(company.businessCase?.reachedAt, null);
+  assert.equal(company.businessCase?.confirmedAt, null);
 });

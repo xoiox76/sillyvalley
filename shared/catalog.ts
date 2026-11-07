@@ -100,11 +100,23 @@ export const costFromUsage = (price: ModelPrice, u: Usage): number =>
     u.cacheWrite1h * price.write1h) /
   1_000_000;
 
+/** Bereiche, nach denen der Baukasten Fähigkeiten und Aufgaben ordnet. */
+export type SkillArea = 'scrum' | 'management' | 'finanzen' | 'entwicklung' | 'inhalte';
+
+export const SKILL_AREAS: { id: SkillArea; title: string }[] = [
+  { id: 'scrum', title: 'Scrum' },
+  { id: 'management', title: 'Management' },
+  { id: 'finanzen', title: 'Finanzen' },
+  { id: 'entwicklung', title: 'Entwicklung' },
+  { id: 'inhalte', title: 'Inhalte' },
+];
+
 export interface SkillInfo {
   id: string;
   title: string;
   blurb: string;
   instruction: string;
+  area: SkillArea;
 }
 
 // Eine Fähigkeit ist eine echte Arbeitsanweisung: Sie landet wörtlich im Profil des Agenten.
@@ -113,6 +125,7 @@ export const SKILLS: SkillInfo[] = [
     id: 'konzept',
     title: 'Konzepte',
     blurb: 'Macht aus einer Idee einen klaren Plan.',
+    area: 'management',
     instruction:
       'Konzepte: Beginne mit dem Problem und der Zielgruppe. Trenne Fakten von Annahmen. Ende mit den nächsten drei konkreten Schritten.',
   },
@@ -120,6 +133,7 @@ export const SKILLS: SkillInfo[] = [
     id: 'prototyp',
     title: 'Klickbare Prototypen',
     blurb: 'Baut eigenständige HTML-Prototypen.',
+    area: 'entwicklung',
     instruction:
       'Prototypen: Liefere eine einzige index.html mit eingebettetem CSS und JavaScript, ohne externe Abhängigkeiten. Sie muss per Doppelklick laufen und auf dem Handy bedienbar sein.',
   },
@@ -127,6 +141,7 @@ export const SKILLS: SkillInfo[] = [
     id: 'recherche',
     title: 'Recherche',
     blurb: 'Belegt Aussagen mit Quellen.',
+    area: 'inhalte',
     instruction:
       'Recherche: Nenne zu jeder Tatsachenbehauptung die Quelle. Hast du keinen Webzugriff, kennzeichne Aussagen als ungeprüftes Vorwissen.',
   },
@@ -134,6 +149,7 @@ export const SKILLS: SkillInfo[] = [
     id: 'text',
     title: 'Texte',
     blurb: 'Schreibt klar und ohne Floskeln.',
+    area: 'inhalte',
     instruction:
       'Texte: Schreibe kurze Sätze in aktiver Sprache. Sprich die Lesenden direkt an. Streiche jedes Wort, das nichts beiträgt.',
   },
@@ -141,18 +157,21 @@ export const SKILLS: SkillInfo[] = [
     id: 'backlog',
     title: 'Backlog',
     blurb: 'Ordnet Aufgaben nach Wert und Dringlichkeit.',
+    area: 'scrum',
     instruction: 'Backlog: Ordne die Zettel so, dass oben steht, was dem Produkt jetzt am meisten bringt. Dringlich ist, was andere blockiert oder einen Fehler behebt, den Nutzer spüren. Begründe jede Einordnung in einem Satz.',
   },
   {
     id: 'scrum',
     title: 'Scrum',
     blurb: 'Plant Sprints und moderiert Retrospektiven.',
+    area: 'scrum',
     instruction: 'Scrum: Wähle für einen Sprint wenige Zettel, die zu einem gemeinsamen Ziel führen. Plane nur, was im Budget liegt. In der Retrospektive benennst du, was gut lief, was nicht, und eine konkrete Änderung für den nächsten Sprint.',
   },
   {
     id: 'pruefung',
     title: 'Prüfung',
     blurb: 'Prüft Ergebnisse gegen die Abnahme.',
+    area: 'entwicklung',
     instruction:
       'Prüfung: Gehe jedes Abnahmekriterium einzeln durch und vermerke Bestanden oder Nicht bestanden mit Begründung. Beschönige nichts.',
   },
@@ -160,9 +179,152 @@ export const SKILLS: SkillInfo[] = [
     id: 'fuehrung',
     title: 'Führung',
     blurb: 'Zerlegt Ziele in prüfbare Aufträge.',
+    area: 'management',
     instruction:
       'Führung: Zerlege ein Ziel in wenige, klar abgegrenzte Aufträge mit Abnahmekriterien, die ein Mensch prüfen kann. Vergib jeden an die passende Rolle, halte das zugewiesene Budget ein und nenne offen, was du nicht entscheiden kannst.',
   },
+  // Aus gängigen Berufsbildern: Scrum Guide und Scrum.org, Produkt- und Engineering-Management, Startup-Finanzen, Entwicklung.
+  {
+    id: 'refinement',
+    title: 'Refinement',
+    blurb: 'Schneidet Zettel klein und macht sie schätzbar.',
+    area: 'scrum',
+    instruction: 'Refinement: Schneide große Aufgaben in kleine, die einzeln Wert liefern. Jede bekommt prüfbare Abnahmekriterien und eine grobe Größe. Was unklar ist, benennst du als offene Frage, statt es zu raten.',
+  },
+  {
+    id: 'moderation',
+    title: 'Moderation',
+    blurb: 'Leitet Planning, Review und Retrospektive.',
+    area: 'scrum',
+    instruction: 'Moderation: Halte Treffen kurz und beim Thema. Alle kommen zu Wort, am Ende steht ein klares Ergebnis mit Verantwortlichen. Hindernisse sammelst du und gibst sie an die Firmenleitung, wenn das Team sie nicht selbst lösen kann.',
+  },
+  {
+    id: 'stakeholder',
+    title: 'Stakeholder',
+    blurb: 'Kennt Bedürfnisse und Einfluss der Beteiligten.',
+    area: 'management',
+    instruction: 'Stakeholder-Management: Benenne, wer betroffen ist, was diese Leute brauchen und wie viel Einfluss sie haben. Stimme Erwartungen früh ab und schreibe Zusagen auf, damit sie nachprüfbar sind.',
+  },
+  {
+    id: 'roadmap',
+    title: 'Roadmap',
+    blurb: 'Ordnet Arbeit nach Themen und Zielen.',
+    area: 'management',
+    instruction: 'Roadmap: Ordne Arbeit nach Themen mit Ziel, nicht als Liste von Funktionen. Jedes Thema sagt, welches Problem es löst und woran man den Erfolg erkennt.',
+  },
+  {
+    id: 'kennzahlen',
+    title: 'Ziele und Kennzahlen',
+    blurb: 'Macht Erfolg messbar.',
+    area: 'management',
+    instruction: 'Ziele und Kennzahlen: Formuliere Ziele so, dass man sie messen kann, mit Ausgangswert und Zielwert. Nenne nur Kennzahlen, die du aus echten Daten ableiten kannst, und kennzeichne Schätzungen.',
+  },
+  {
+    id: 'budgetplanung',
+    title: 'Budget und Forecast',
+    blurb: 'Plant Ausgaben und vergleicht mit dem Ist.',
+    area: 'finanzen',
+    instruction: 'Budget und Forecast: Plane Einnahmen und Ausgaben für die nächsten Monate und vergleiche sie regelmäßig mit dem Ist. Abweichungen erklärst du mit Ursache. Annahmen stehen getrennt von Zahlen.',
+  },
+  {
+    id: 'liquiditaet',
+    title: 'Liquidität und Runway',
+    blurb: 'Hat Zahlungsflüsse und Reichweite im Blick.',
+    area: 'finanzen',
+    instruction: 'Liquidität: Stelle Zu- und Abflüsse nach Monaten dar und berechne, wie lange das Geld reicht. Eine Firma kann auf dem Papier Gewinn machen und trotzdem zahlungsunfähig werden; darauf achtest du zuerst.',
+  },
+  {
+    id: 'unitecon',
+    title: 'Unit Economics',
+    blurb: 'Rechnet Kosten und Ertrag je Kunde.',
+    area: 'finanzen',
+    instruction: 'Unit Economics: Rechne für einen Kunden oder ein Produkt Kundengewinnungskosten, Kundenwert und Amortisationszeit. Nenne jede Annahme mit Quelle oder als Schätzung.',
+  },
+  {
+    id: 'buchhaltung',
+    title: 'Buchhaltung und Reporting',
+    blurb: 'Führt saubere Aufstellungen und Berichte.',
+    area: 'finanzen',
+    instruction: 'Buchhaltung und Reporting: Halte Aufstellungen vollständig und nachvollziehbar, jede Zahl mit Beleg oder Herkunft. Berichte sind kurz: Stand, Veränderung, Auffälligkeiten. Steuer- und Rechtsfragen kennzeichnest du als offen für Fachleute.',
+  },
+  {
+    id: 'frontend',
+    title: 'Frontend',
+    blurb: 'Baut Oberflächen für Handy und Desktop.',
+    area: 'entwicklung',
+    instruction: 'Frontend: Baue Oberflächen, die auf Handy und Desktop bedienbar sind, mit Tastatur erreichbar und schnell geladen. Halte Komponenten klein und wiederverwendbar.',
+  },
+  {
+    id: 'backend',
+    title: 'Backend und APIs',
+    blurb: 'Entwirft Schnittstellen und Abläufe.',
+    area: 'entwicklung',
+    instruction: 'Backend: Entwirf Schnittstellen mit klaren Eingaben, Ausgaben und Fehlern. Prüfe jede Eingabe, bevor du sie verwendest, und dokumentiere die Endpunkte kurz.',
+  },
+  {
+    id: 'datenbank',
+    title: 'Datenbanken',
+    blurb: 'Modelliert und schützt Daten.',
+    area: 'entwicklung',
+    instruction: 'Datenbanken: Modelliere Daten so einfach wie möglich, mit eindeutigen Schlüsseln und klaren Beziehungen. Änderungen am Schema schreibst du als nachvollziehbare Migration.',
+  },
+  {
+    id: 'tests',
+    title: 'Automatisierte Tests',
+    blurb: 'Sichert Verhalten mit Tests ab.',
+    area: 'entwicklung',
+    instruction: 'Tests: Schreibe zu jeder Änderung Tests, die das gewünschte Verhalten prüfen, auch Grenzfälle und Fehler. Ein Fehler bekommt zuerst einen Test, der ihn zeigt.',
+  },
+  {
+    id: 'devops',
+    title: 'CI/CD und Betrieb',
+    blurb: 'Automatisiert Bauen, Testen und Ausliefern.',
+    area: 'entwicklung',
+    instruction: 'CI/CD: Beschreibe Bauen, Testen und Ausliefern als wiederholbare Schritte in Dateien. Geheimnisse gehören nie in den Code.',
+  },
+  {
+    id: 'sicherheit',
+    title: 'Sichere Entwicklung',
+    blurb: 'Denkt Angriffe an jeder Schicht mit.',
+    area: 'entwicklung',
+    instruction: 'Sicherheit: Prüfe an jeder Schicht, wie man sie missbrauchen könnte: Eingaben, Rechte, gespeicherte Daten. Nenne gefundene Lücken mit Schweregrad und Vorschlag.',
+  },
+  {
+    id: 'codereview',
+    title: 'Code-Review',
+    blurb: 'Prüft Code anderer auf Fehler und Lesbarkeit.',
+    area: 'entwicklung',
+    instruction: 'Code-Review: Prüfe fremden Code auf Fehler, Sicherheitslücken und Verständlichkeit. Jeder Hinweis nennt die Stelle, das Problem und einen konkreten Vorschlag.',
+  },
+
+];
+
+/** Bausteine für die Aufgabe einer Stelle. Ein Baustein bringt die Fähigkeiten mit, die er braucht. */
+export const TASK_BLOCKS: { id: string; area: SkillArea; text: string; skillIds: string[] }[] = [
+  { id: 'backlog-pflegen', area: 'scrum', text: 'Hält das Backlog geordnet und bereitet Zettel für das Planning vor.', skillIds: ['backlog', 'refinement'] },
+  { id: 'events-leiten', area: 'scrum', text: 'Moderiert Planning, Review und Retrospektive und räumt Hindernisse aus dem Weg.', skillIds: ['scrum', 'moderation'] },
+  { id: 'ziel-verantworten', area: 'management', text: 'Verantwortet ein Produktziel und verteilt die Arbeit im Team.', skillIds: ['fuehrung'] },
+  { id: 'roadmap-abstimmen', area: 'management', text: 'Stimmt Roadmap und Prioritäten mit den Stakeholdern ab.', skillIds: ['roadmap', 'stakeholder'] },
+  { id: 'kennzahlen-fuehren', area: 'management', text: 'Legt messbare Ziele fest und berichtet, wie weit das Team ist.', skillIds: ['kennzahlen'] },
+  { id: 'budget-planen', area: 'finanzen', text: 'Plant Budgets und Forecasts und meldet Abweichungen.', skillIds: ['budgetplanung'] },
+  { id: 'liquiditaet-ueberwachen', area: 'finanzen', text: 'Überwacht Liquidität und Runway und warnt früh.', skillIds: ['liquiditaet'] },
+  { id: 'unitecon-rechnen', area: 'finanzen', text: 'Rechnet Unit Economics für Produkte und Kanäle.', skillIds: ['unitecon'] },
+  { id: 'buecher-fuehren', area: 'finanzen', text: 'Führt Aufstellungen und schreibt den Monatsbericht.', skillIds: ['buchhaltung'] },
+  { id: 'oberflaechen-bauen', area: 'entwicklung', text: 'Baut Oberflächen, die auf Handy und Desktop funktionieren.', skillIds: ['frontend', 'prototyp'] },
+  { id: 'apis-bauen', area: 'entwicklung', text: 'Baut APIs und Datenmodelle.', skillIds: ['backend', 'datenbank'] },
+  { id: 'tests-schreiben', area: 'entwicklung', text: 'Schreibt automatisierte Tests und hält sie grün.', skillIds: ['tests'] },
+  { id: 'code-pruefen', area: 'entwicklung', text: 'Prüft Code anderer auf Fehler und Sicherheitslücken.', skillIds: ['codereview', 'sicherheit'] },
+  { id: 'auslieferung', area: 'entwicklung', text: 'Automatisiert Bauen, Testen und Ausliefern.', skillIds: ['devops'] },
+  { id: 'texte-schreiben', area: 'inhalte', text: 'Schreibt Texte für Website und Produkt.', skillIds: ['text'] },
+  { id: 'markt-recherchieren', area: 'inhalte', text: 'Recherchiert Markt und Wettbewerb mit Quellen.', skillIds: ['recherche'] },
+  { id: 'konzepte-schreiben', area: 'inhalte', text: 'Macht aus Ideen Konzepte mit nächsten Schritten.', skillIds: ['konzept'] },
+];
+
+/** Erfahrung: wie selbstständig die Stelle arbeitet. Wird zur Anforderung. */
+export const SENIORITY: { id: string; title: string; text: string }[] = [
+  { id: 'junior', title: 'Junior', text: 'Arbeitet nach klaren Vorgaben und fragt bei Unklarheiten nach.' },
+  { id: 'erfahren', title: 'Erfahren', text: 'Arbeitet selbstständig und schlägt Verbesserungen vor.' },
+  { id: 'senior', title: 'Senior', text: 'Trifft Methoden- und Architekturentscheidungen selbst und leitet andere an.' },
 ];
 
 export interface RoleInfo {

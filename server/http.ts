@@ -202,6 +202,15 @@ async function route(engine: Engine, req: IncomingMessage, res: ServerResponse, 
     }
   }
 
+  if (section === 'charter' && parts.length === 3 && method === 'PUT') {
+    engine.setCharter(id, await readJson(req));
+    return sendJson(res, 200, engine.snapshot(id));
+  }
+  if (section === 'charter' && parts[3] === 'confirm' && parts.length === 4 && method === 'POST') {
+    engine.confirmBusinessCase(id);
+    return sendJson(res, 200, engine.snapshot(id));
+  }
+
   if (section === 'stream' && method === 'GET') {
     res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store', Connection: 'keep-alive' });
     const send = (snapshot: unknown) => res.write(`data: ${JSON.stringify(snapshot)}\n\n`);
@@ -223,6 +232,10 @@ async function route(engine: Engine, req: IncomingMessage, res: ServerResponse, 
     }
     if (parts.length === 5 && parts[4] === 'fire' && method === 'POST') {
       engine.fireAgent(id, parts[3]);
+      return sendJson(res, 200, {});
+    }
+    if (parts.length === 5 && parts[4] === 'desk' && method === 'POST') {
+      engine.assignDesk(id, parts[3], await readJson(req));
       return sendJson(res, 200, {});
     }
     if (parts.length === 5 && parts[4] === 'skills' && method === 'POST') {

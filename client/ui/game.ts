@@ -4,7 +4,7 @@ import { chooseLanguage } from './language.ts';
 import type { Language } from '../i18n/translate.ts';
 import { locale } from '../i18n/translate.ts';
 import { marked } from 'marked';
-import { DEFAULT_CEO, LOOK_OPTIONS, NAME_IDEAS, ROLES, RULES, roleById, setExtraModels } from '../../shared/catalog.ts';
+import { DEFAULT_CEO, LOOK_OPTIONS, NAME_IDEAS, ROLES, RULES, roleById, setExtraModels, TASK_BLOCKS, type SkillArea } from '../../shared/catalog.ts';
 import { checkDepartment, checkPlacement, isEdgeKind, rectFromCorners, rectWalls, wallSides, type Tile } from '../../shared/layout.ts';
 import { ROLE_TEMPLATE, parseRole, roleToMarkdown, withRoleColor } from '../../shared/roleMarkdown.ts';
 import { siteAt, siteBase, storeyOf, buildingAt, checkShaft, floorOf, isShaft, itemsOnFloor, roomOf } from '../../shared/building.ts';
@@ -19,9 +19,11 @@ import {
   buildPanel, suggestedLimit, contractModal, departmentModal, departmentOfAgent, financePanel, laptopModal, hireModal, noteModal, teamModal, liveNote, mandateModal, meetingModal, meetingPanel, notices, orderModal,
   projectsPanel, roomChips, teamPanel, topBar, townCard, townChips, viewerModal,
   type ContractView, type DepartmentDraft, type FilesDraft, type HireDraft, type NoteDraft, type TeamDraft, type WorkspaceFolds, type MandateDraft, type MeetingDraft, type OrderDraft, type OrderTeamDraft, type SelfStartMode, type ViewerState,
-  type RoomNaming,
+  type RoomNaming, jobFromKit,
 } from './views.ts';
 import { isSeparateRoom, regionAt, zoneAt } from '../../shared/zones.ts';
+import { parseSkillMarkdown } from '../../shared/skillfile.ts';
+import { readBusinessCase, readVision } from './charter.ts';
 
 type Tab = 'bauen' | 'team' | 'projekte' | 'finanzen';
 type Modal =
@@ -701,7 +703,7 @@ export function renderGame(root: HTMLElement, companyId: string, onLeave: () => 
     const role = ROLES[0];
     const pick = <T,>(list: T[]) => list[Math.floor(Math.random() * list.length)];
     const look: Look = { hair: pick(LOOK_OPTIONS.hair), hairColor: pick(LOOK_OPTIONS.hairColor), skin: pick(LOOK_OPTIONS.skin), top: role.top, glasses: Math.random() < 0.25 };
-    return { roleId: role.id, companyRoleId: null, skillIds: [...role.skillIds], modelId: 'claude-haiku-5-5', name: randomName(), look, deskId: null, customSkills: [], textChars: {}, skillError: '', error: '', busy: false };
+    return { roleId: role.id, companyRoleId: null, skillIds: [...role.skillIds], modelId: 'claude-haiku-5-5', name: randomName(), look, deskId: null, customSkills: [], textChars: {}, area: null, taskIds: [], seniority: 'erfahren', skillError: '', error: '', busy: false };
   }
 
   function newMandateDraft(managerId?: string, departmentId?: string, teamId: string | null = null): MandateDraft {
@@ -808,11 +810,11 @@ export function renderGame(root: HTMLElement, companyId: string, onLeave: () => 
   /** Liest eine Markdown-Datei im Browser und gibt Titel und Text zurück. Die erste Überschrift wird zum Namen. */
   async function readSkillFile(file: File): Promise<{ title: string; instruction: string }> {
     if (file.size > RULES.skillTextMax * 4) throw new Error(`Die Datei ist zu groß: höchstens ${RULES.skillTextMax.toLocaleString(locale())} Zeichen, denn sie wird bei jedem Lauf mitgelesen.`);
-    const instruction = (await file.text()).trim();
+    // Eine SKILL.md im offenen Agent-Skills-Format bringt Name und Beschreibung im Kopf mit.
+    const { title, instruction } = parseSkillMarkdown(await file.text(), file.name);
     if (!instruction) throw new Error('Die Datei ist leer.');
     if (instruction.length > RULES.skillTextMax) throw new Error(`Die Datei ist zu lang: ${instruction.length.toLocaleString(locale())} Zeichen, höchstens ${RULES.skillTextMax.toLocaleString(locale())}.`);
-    const heading = instruction.match(/^#\s+(.+)$/m)?.[1]?.trim();
-    return { title: (heading || file.name.replace(/\.\w+$/, '')).slice(0, 60), instruction };
+    return { title, instruction };
   }
 
   /* ---------- Aktionen ---------- */
@@ -1212,6 +1214,34 @@ export function renderGame(root: HTMLElement, companyId: string, onLeave: () => 
       modal.draft.roleId = role.id;
       modal.draft.skillIds = [...role.skillIds];
       modal.draft.look.top = role.top;
+      render();
+    },
+    'hire-area'(el) {
+      if (modal?.type !== 'hire') return;
+      const id = el.dataset.id as SkillArea;
+      modal.draft.area = modal.draft.area === id ? null : id;
+      render();
+    },
+    'hire-task'(el) {
+      if (modal?.type !== 'hire') return;
+      const draft = modal.draft;
+      const id = el.dataset.id!;
+      if (draft.taskIds.includes(id)) {
+        draft.taskIds = draft.taskIds.filter((t) => t !== id);
+      } else {
+        draft.taskIds = [...draft.taskIds, id];
+        // Ein Baustein bringt seine Fähigkeiten mit. Abwählen lassen sie sich einzeln.
+        const block = TASK_BLOCKS.find((b) => b.id === id);
+        draft.skillIds = [...new Set([...draft.skillIds, ...(block?.skillIds ?? [])])];
+      }
+      render();
+    },
+    async 'business-case-confirm'() {
+      await api.confirmBusinessCase(companyId).catch(fail);
+    },
+    'hire-seniority'(el) {
+      if (modal?.type !== 'hire') return;
+      modal.draft.seniority = el.dataset.id!;
       render();
     },
     'hire-skill'(el) {
@@ -1698,7 +1728,13 @@ export function renderGame(root: HTMLElement, companyId: string, onLeave: () => 
         const name = String(data.get('name') ?? '');
         await api.hire(companyId, {
           name, roleId: draft.roleId, companyRoleId: draft.companyRoleId, skillIds: draft.skillIds, modelId: draft.modelId, look: { ...draft.look, top: roleById(draft.roleId)!.top }, deskId: draft.deskId ?? freeDeskHere(),
-          job: { title: data.get('jobTitle'), task: data.get('jobTask'), requirements: data.get('jobRequirements') },
+          job: (() => {
+            // Bei einer eigenen Stelle setzt der Baukasten Aufgabe und Anforderungen zusammen. Freitext ergänzt nur.
+            const free = { task: String(data.get('jobTask') ?? '').trim(), requirements: String(data.get('jobRequirements') ?? '').trim() };
+            if (draft.roleId !== 'frei' || draft.companyRoleId) return { title: data.get('jobTitle'), task: free.task, requirements: free.requirements };
+            const kit = jobFromKit(draft);
+            return { title: data.get('jobTitle'), task: [kit.task, free.task].filter(Boolean).join(' '), requirements: [kit.requirements, free.requirements].filter(Boolean).join(' ') };
+          })(),
           customSkills: draft.customSkills.map(({ title, instruction, source }) => ({ title, instruction, source })),
         });
         modal = null;
@@ -1709,6 +1745,9 @@ export function renderGame(root: HTMLElement, companyId: string, onLeave: () => 
         draft.error = (err as Error).message;
         render();
       }
+    } else if (kind === 'assign-desk') {
+      const deskId = String(data.get('desk') ?? '');
+      if (deskId) await api.assignDesk(companyId, form.dataset.id!, deskId).catch(fail);
     } else if (kind === 'order' && modal?.type === 'order') {
       const draft = modal.draft;
       draft.busy = true;
@@ -1892,6 +1931,10 @@ export function renderGame(root: HTMLElement, companyId: string, onLeave: () => 
         .catch(fail);
     } else if (kind === 'budget') {
       await api.patchCompany(companyId, { budgetEur: Number(data.get('budget')) }).catch(fail);
+    } else if (kind === 'vision') {
+      await api.setCharter(companyId, { vision: readVision(data) }).then(() => toast('info', 'Vision gespeichert.')).catch(fail);
+    } else if (kind === 'business-case') {
+      await api.setCharter(companyId, { businessCase: readBusinessCase(data) }).then(() => toast('info', 'Business Case gespeichert.')).catch(fail);
     }
   }
 

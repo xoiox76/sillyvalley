@@ -6,6 +6,7 @@ import { LOCATIONS, locationById } from '../../shared/catalog.ts';
 import type { CompanySummary, LocationId, SystemInfo } from '../../shared/types.ts';
 import { roomPreview } from '../world/world.ts';
 import { api } from './api.ts';
+import { businessCaseFields, readBusinessCase, readVision, visionFields } from './charter.ts';
 import { eur } from './format.ts';
 import { html, morph } from './html.ts';
 
@@ -70,6 +71,11 @@ export function renderStart(root: HTMLElement, onOpen: (id: string) => void): vo
           <input name="projectDir" maxlength="500" autocomplete="off" spellcheck="false" placeholder="Vollständiger Pfad zu einem Ordner, zum Beispiel /Pfad/zum/Projekt" />
           <small>Dein Team darf in diesem Ordner lesen und ändern, sonst nirgends außerhalb seines Arbeitsbereichs. Spielstand und Verbrauchsbuch bleiben außerhalb des Projekts.</small>
         </label>
+        <details class="skill-add" data-key="charter"><summary>Produktvision und Business Case (optional)</summary>
+          <p class="hint">Dein Team richtet sich nach der Vision. Der Business Case legt fest, ab wann du die Kosten prüfst. Beides kannst du später ändern.</p>
+          ${visionFields(null)}
+          ${businessCaseFields(null)}
+        </details>
         ${provider && !provider.available ? html`
           <div class="alert alert-error" role="alert">
             <strong>Es sind keine Agenten verfügbar.</strong>
@@ -123,6 +129,8 @@ export function renderStart(root: HTMLElement, onOpen: (id: string) => void): vo
         locationId,
         budgetEur: Number(data.get('budget')),
         projectDir: String(data.get('projectDir') ?? '').trim() || null,
+        vision: readVision(data),
+        businessCase: readBusinessCase(data),
       });
       onOpen(company.id);
     } catch (err) {

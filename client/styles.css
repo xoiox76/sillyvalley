@@ -703,3 +703,13 @@ kbd { font: inherit; padding: 0 5px; background: var(--raised); border: 1px soli
 .paint-row > span { color: var(--muted); font-size: 16px; margin-right: 4px; }
 .paint-swatch { width: 24px; height: 24px; border: 2px solid var(--line); cursor: pointer; padding: 0; }
 .paint-swatch.selected { border-color: var(--mint); outline: 2px solid var(--mint); }
+
+.skill-group { margin: 4px 0 8px; }
+.skill-group-title { display: block; color: var(--muted); font-size: 15px; margin-bottom: 3px; }
+
+/* Auswahl als Formularfelder: Kästchen sind versteckt, die Beschriftung sieht aus wie ein Schalter. */
+.check-toggle { position: relative; display: inline-flex; align-items: center; }
+.check-toggle input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+.check-toggle:has(input:checked) { background: #164a39; border-color: var(--mint); color: var(--mint); }
+.check-toggle:has(input:focus-visible) { outline: 2px solid var(--mint); outline-offset: 2px; }
+.charter-list { margin: 0 0 8px; padding-left: 18px; }

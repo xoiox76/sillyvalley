@@ -2,6 +2,7 @@
 // als Datei im Arbeitsbereich, damit der Spieler nachlesen kann, was sein Mitarbeiter weiß.
 
 import { READ_DIR } from './workspace.ts';
+import { BUSINESS_CASE_FILE, VISION_FILE, visionLines } from '../shared/vision.ts';
 import { MODELS, ROLES, RULES, SKILLS, agentTitle, modelById, roleById, skillById, skillTitle } from '../shared/catalog.ts';
 import type { Agent, BoardItem, CommandRequest, Company, CompanyRole, Contract, CriterionVerdict, CustomSkill, Department, Job, Mandate, Meeting, MeetingOutcome, Order, StageKind, Verdict } from '../shared/types.ts';
 
@@ -65,6 +66,8 @@ export function agentProfile(company: Company, agent: Agent): string {
     'Die Idee der Firma:',
     company.idea,
     '',
+    company.vision ? `Die Produktvision (Volltext in ${VISION_FILE}). Richte deine Arbeit daran aus, und was nicht dazu passt, sprich an:\n${visionLines(company.vision).join('\n')}\n` : '',
+    company.businessCase ? `Die Firma hat einen Business Case mit Nutzen und Kostengrenze, siehe ${BUSINESS_CASE_FILE}. Teure Umwege sprichst du vorher an.\n` : '',
     skills.length ? `Deine Arbeitsweise:\n${skills.map((s) => `- ${s}`).join('\n')}\n` : '',
     ...custom.map((skill) => `${customSkillBlock(skill)}\n`),
     'Dein Arbeitsbereich ist das aktuelle Verzeichnis:',
