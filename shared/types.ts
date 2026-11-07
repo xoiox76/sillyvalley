@@ -5,7 +5,7 @@ import type { ModelInfo } from './catalog.ts';
 export type LocationId = 'kinderzimmer' | 'garage' | 'eckladen' | 'buero' | 'kino' | 'neubau-klein' | 'neubau-mittel' | 'neubau-gross';
 /** Was schon im Raum steht, wenn man einzieht. Es lässt sich verschieben, aber nicht kaufen. */
 export type PropKind = 'stairs' | 'lift' | 'bed' | 'toybox' | 'desk-kid' | 'workbench' | 'boxes' | 'tires' | 'lockers' | 'sofa';
-export type FurnitureKind = 'ceoDesk' | 'desk' | 'shelf' | 'coffee' | 'plant' | 'meeting' | PropKind;
+export type FurnitureKind = 'ceoDesk' | 'desk' | 'shelf' | 'coffee' | 'plant' | 'meeting' | 'wall' | 'door' | 'table' | PropKind;
 
 /** Ein Agent fragt einen Kollegen um Hilfe. Das sind zwei echte Läufe mit echtem Verbrauch, kein Bild. */
 export interface HelpRequest {
@@ -481,6 +481,20 @@ export interface Notice {
 }
 
 /** Ein Bereich auf dem Boden. Wessen Schreibtischplatz darin liegt, gehört zur Abteilung: Umorganisieren heißt Möbel rücken. */
+/** Was in einem Raum geschieht. Ein Raum entsteht aus Wänden und Türen, die Zone gibt ihm Zweck und Namen. */
+export type ZoneKind = 'meeting' | 'break' | 'other';
+
+export interface Zone {
+  id: string;
+  kind: ZoneKind;
+  name: string;
+  /** Die Etage. Fehlt sie, liegt die Zone im Erdgeschoss. */
+  floor?: number;
+  /** Ein Feld im Raum. Der Raum selbst ergibt sich aus den Wänden drumherum. */
+  i: number;
+  j: number;
+}
+
 export interface Department {
   id: string;
   name: string;
@@ -649,6 +663,8 @@ export interface Company {
   board: BoardItem[];
   helps: HelpRequest[];
   departments: Department[];
+  /** Benannte Räume. Ältere Spielstände haben noch keine. */
+  zones?: Zone[];
   customSkills: CustomSkill[];
   roles: CompanyRole[];
   /** Du selbst als Figur. Fehlt es, gilt die Vorgabe. */

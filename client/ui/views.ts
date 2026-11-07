@@ -3,10 +3,11 @@
 import { languageSwitch } from './language.ts';
 import { locale } from '../i18n/translate.ts';
 import {
-  DEFAULT_CEO, FURNITURE, isProp, staffOf, LOOK_OPTIONS, MODELS, PRICES_AS_OF, PROVIDERS, ROLES, RULES, SKILLS, costFromUsage, furnitureByKind,
+  DEFAULT_CEO, FURNITURE, staffOf, LOOK_OPTIONS, MODELS, PRICES_AS_OF, PROVIDERS, ROLES, RULES, SKILLS, costFromUsage, furnitureByKind,
   BASE_CONTEXT_TOKENS, agentTitle, estimateStepUsd, estimateTokensOfChars, locationById, modelById, roleById, skillById, skillTitle,
 } from '../../shared/catalog.ts';
 import { deskDepartment } from '../../shared/layout.ts';
+import { ZONE_COLORS, ZONE_KINDS, meetingRooms } from '../../shared/zones.ts';
 import { NOTE_COLORS, boardNotes, noteLook, roleColor, type BoardNote } from '../../shared/board.ts';
 import { colorInText } from '../../shared/roleMarkdown.ts';
 import { quotaClosedUntil } from '../../shared/quota.ts';
@@ -14,7 +15,7 @@ import { ROADMAP_PHASES, roadmapRows } from '../../shared/roadmap.ts';
 import { CONNECTION_KINDS, OPENAI_PRICES_AS_OF, connectionKind } from '../../shared/providers.ts';
 import { SPRINT_COLUMNS, openSprint, scrumMaster, sprintCommitted, sprintRows } from '../../shared/scrum.ts';
 import { baseFloorOf, siteAt, siteBase, EXTEND_COST, SHAFT_COST, buildLimits, buildingAt, floorCost, floorName, floorOf, isShaft, roomAt, roomOf } from '../../shared/building.ts';
-import type { Agent, BoardItem, CommandRequest, Company, CompanyRole, Contract, CustomSkill, Department, LiveKind, Look, Mandate, Meeting, Order, Pool, ProjectAgent, Proposal, Run, Snapshot, Sprint, Stage, StageKind, Team } from '../../shared/types.ts';
+import type { Agent, BoardItem, CommandRequest, Company, CompanyRole, Contract, CustomSkill, Department, LiveKind, Look, Mandate, Meeting, Order, Pool, ProjectAgent, Proposal, Run, Snapshot, Sprint, Stage, StageKind, Team, Zone } from '../../shared/types.ts';
 import { HOME_ROOMS, TOWN_NAME, type City, type Parcel } from '../../shared/town.ts';
 import { portraitUrl } from '../world/characters.ts';
 import type { FileEntry } from './api.ts';
@@ -530,7 +531,7 @@ const meetingSpent = (company: Company, meeting: Meeting) => company.runs.filter
 function meetingsSection(s: Snapshot): Safe {
   const { company, system } = s;
   const hired = company.agents.filter((a) => a.hired);
-  const rooms = company.placed.filter((p) => p.kind === 'meeting');
+  const rooms = meetingRooms(company);
   const meetings = [...company.meetings].reverse();
   const free = rooms.some((room) => !company.meetings.some((m) => m.status === 'running' && m.roomId === room.id));
   const can = system.provider.available && hired.length >= RULES.meetingMinParticipants && free;
@@ -2183,14 +2184,20 @@ function buildingSection(s: Snapshot): Safe {
   </section>`;
 }
 
-export function buildPanel(s: Snapshot, buildKind: string | null, moving: boolean, message: string, anchored: boolean, inventoryId: string | null = null, confirmDelete: string | null = null, atHead = true): Safe {
+export interface RoomNaming {
+  target: { i: number; j: number } | null;
+  zone: Zone | null;
+  ok: boolean;
+}
+
+export function buildPanel(s: Snapshot, buildKind: string | null, moving: boolean, message: string, anchored: boolean, inventoryId: string | null = null, confirmDelete: string | null = null, atHead = true, room: RoomNaming | null = null): Safe {
   const fromInventory = Boolean(inventoryId);
   const deletable = moving || fromInventory;
   const { company } = s;
   const zone = buildKind === 'department';
   const info = buildKind && !zone ? furnitureByKind(buildKind as never) : null;
   const shaft = info ? isShaft(info.kind) : false;
-  const rotates = info ? !isProp(info.kind) || (shaft && !moving) : false;
+  const rotates = info ? !(shaft && moving) : false;
   return html`
     <div class="panel-head"><h2>Büro ausbauen</h2></div>
     <div class="points"><span class="points-icon" aria-hidden="true"></span><span>Baupunkte:</span><strong class="num">${s.system.unlimitedBuild ? '∞' : company.buildPoints}</strong>${s.system.unlimitedBuild ? html`<small class="hint">Schalter zum Ausprobieren, Bauen kostet nichts</small>` : null}</div>
@@ -2235,6 +2242,7 @@ export function buildPanel(s: Snapshot, buildKind: string | null, moving: boolea
           <span class="catalog-name"><strong>Abteilung</strong><small>Ein Bereich mit eigenem Team, Budget und Wissen.</small></span><span class="num">${RULES.departmentCost}</span>
         </button></li>
     </ul>
+    ${roomSection(s, room)}
     ${atHead ? buildingSection(s) : html`<p class="hint" data-key="anbau-hinweis">Anbauen geht vorerst nur am Firmensitz.</p>`}
     ${company.departments.length ? html`<section class="detail" data-key="zones">
       <h3>Abteilungen</h3>
@@ -2246,6 +2254,31 @@ export function buildPanel(s: Snapshot, buildKind: string | null, moving: boolea
     </section>` : null}
     <p class="hint">Mehr Platz: Läden und Grundstücke gibt es draußen in der Stadt.</p>
     <p class="hint hint-note">Baupunkte sind keine Euro. Du verdienst sie nur, wenn du ein Ergebnis abnimmst, nie durch Verbrauch.</p>`;
+}
+
+/** Räume aus Wänden und Türen bekommen hier Zweck und Namen. */
+function roomSection(s: Snapshot, room: RoomNaming | null): Safe {
+  const zones = s.company.zones ?? [];
+  const title = (kind: string) => ZONE_KINDS.find((z) => z.kind === kind)?.title ?? kind;
+  const form = room?.target
+    ? html`<div class="room-form" data-key="room-form">
+        <label class="field"><span>Zweck</span><select name="zoneKind">${ZONE_KINDS.map((z) => html`<option value="${z.kind}" ${room.zone?.kind === z.kind ? 'selected' : ''}>${z.title}</option>`)}</select></label>
+        <label class="field"><span>Name</span><input name="zoneName" maxlength="40" autocomplete="off" value="${room.zone?.name ?? ''}" /></label>
+        ${room.ok ? null : html`<p class="hint">Das ist kein eigener Raum. Trenne ihn mit Wänden und einer Tür ab.</p>`}
+        <p class="hint">Ein Besprechungsraum braucht einen Besprechungstisch mit einem freien Feld an jeder Seite.</p>
+        <span class="btn-row"><button class="btn btn-small" data-action="room-save" ${room.ok ? '' : 'disabled'}>Speichern</button>
+        <button class="btn btn-small" data-action="room-cancel">Abbrechen</button></span>
+      </div>`
+    : room
+      ? html`<p class="hint">Klicke in einen Raum, den Wände und eine Tür abtrennen.</p><button class="btn btn-small" data-action="room-cancel">Abbrechen</button>`
+      : html`<button class="btn btn-small" data-action="room-mode">Raum benennen</button>`;
+  return html`<section class="detail" data-key="rooms">
+    <h3>Räume</h3>
+    ${form}
+    ${zones.length ? html`<ul class="dept-list">${zones.map((z) => html`<li data-key="${z.id}">
+      <span><span class="dept-dot" style="background:${ZONE_COLORS[z.kind]}"></span> ${z.name}, ${title(z.kind)}${floorOf(z) ? `, ${floorName(floorOf(z))}` : ''}</span>
+      <span class="btn-row"><button class="btn btn-small" data-action="room-remove" data-id="${z.id}">Entfernen</button></span></li>`)}</ul>` : null}
+  </section>`;
 }
 
 /* ---------- Ergebnis ansehen ---------- */

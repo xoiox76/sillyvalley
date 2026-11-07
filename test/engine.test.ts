@@ -8,6 +8,7 @@ import { BASE_CONTEXT_TOKENS, LOCATIONS, MODELS, RULES, agentTitle, isProp, comm
 import { blockedEdges, blockedSet, checkPlacement, findPath, footprint, meetingDoor, meetingSeats, standingTile } from '../shared/layout.ts';
 import type { Look } from '../shared/types.ts';
 import { Engine } from '../server/engine.ts';
+import { meetingRooms } from '../shared/zones.ts';
 import { FxSource, parseEcb } from '../server/fx.ts';
 import { StreamInterpreter, buildArgs, createAnthropicProvider } from '../server/providers/anthropic.ts';
 import type { ProviderEvent } from '../server/providers/types.ts';
@@ -40,6 +41,15 @@ const makeEngine = async (data: string) => {
   return e;
 };
 const newCompany = (budgetEur = 10) => engine.createCompany({ name: 'Testfirma', idea: 'Eine Idee', locationId: 'garage', budgetEur });
+/** Ein 4 × 4-Besprechungsraum und drei Schreibtische passen nicht in die Garage. Diese Firma zieht ins Büro. */
+const bigCompany = (budgetEur = 10) => {
+  const company = newCompany(budgetEur);
+  const points = company.buildPoints;
+  company.buildPoints = 1000;
+  engine.moveCompany(company.id, 'buero');
+  company.buildPoints = points;
+  return company;
+};
 const until = async (check: () => boolean, label = 'Bedingung') => {
   for (let i = 0; i < 300; i++) {
     if (check()) return;
@@ -316,11 +326,27 @@ test('Umzug nimmt Möbel mit und kostet Baupunkte', () => {
 
 /* ---------- Mehrere Agenten an einem Auftrag ---------- */
 
-const addDesk = (companyId: string, i: number, j: number) => {
-  const c = engine.snapshot(companyId).company;
+/** Ein Schreibtisch auf dem gewünschten Platz, sonst auf dem nächsten freien. */
+const addDeskWith = (game: Engine, companyId: string, i: number, j: number) => {
+  const c = game.snapshot(companyId).company;
   c.buildPoints += 40;
-  engine.placeItem(companyId, { kind: 'desk', i, j, rot: 0 });
+  try {
+    game.placeItem(companyId, { kind: 'desk', i, j, rot: 0 });
+    return;
+  } catch {
+    // Der Platz ist belegt, es wird gesucht.
+  }
+  for (let a = 0; a < 12; a++) for (let b = 0; b < 10; b++) {
+    try {
+      game.placeItem(companyId, { kind: 'desk', i: a, j: b, rot: 0 });
+      return;
+    } catch {
+      // Nicht hier.
+    }
+  }
+  throw new Error('Kein Platz für einen Schreibtisch');
 };
+const addDesk = (companyId: string, i: number, j: number) => addDeskWith(engine, companyId, i, j);
 
 const trio = async (companyId: string) => {
   addDesk(companyId, 4, 1);
@@ -602,7 +628,7 @@ test('Glaswände sperren den Weg, nur die Tür führt hinein', () => {
   assert.ok(path.length > 0, 'Es gibt einen Weg');
   const steps = [{ i: 0, j: 0 }, ...path];
   const crossings = steps.slice(1).filter((t, n) => {
-    const inside = (p: { i: number; j: number }) => p.i >= 2 && p.i <= 4 && p.j >= 2 && p.j <= 4;
+    const inside = (p: { i: number; j: number }) => p.i >= 2 && p.i <= 5 && p.j >= 2 && p.j <= 5;
     return inside(t) !== inside(steps[n]);
   });
   assert.equal(crossings.length, 1, 'Der Weg kreuzt die Wand genau einmal');
@@ -613,9 +639,9 @@ test('Glaswände sperren den Weg, nur die Tür führt hinein', () => {
 
 test('Der Raum passt nur, wenn die Tür erreichbar bleibt', () => {
   assert.ok(checkPlacement(garage, [], { kind: 'meeting', i: 2, j: 2, rot: 0 }).ok);
-  assert.match(checkPlacement(garage, [], { kind: 'meeting', i: 5, j: 2, rot: 0 }).reason, /Tür/, 'Die Tür zeigt auf die Wand');
-  assert.ok(checkPlacement(garage, [], { kind: 'meeting', i: 5, j: 2, rot: 2 }).ok, 'Gedreht geht es');
-  assert.ok(!checkPlacement(garage, [], { kind: 'meeting', i: 6, j: 2, rot: 2 }).ok, 'Außerhalb des Raums');
+  assert.match(checkPlacement(garage, [], { kind: 'meeting', i: 4, j: 2, rot: 0 }).reason, /Tür/, 'Die Tür zeigt auf die Wand');
+  assert.ok(checkPlacement(garage, [], { kind: 'meeting', i: 4, j: 2, rot: 2 }).ok, 'Gedreht geht es');
+  assert.ok(!checkPlacement(garage, [], { kind: 'meeting', i: 5, j: 2, rot: 2 }).ok, 'Außerhalb des Raums');
 });
 
 test('Der Platz an der Tür wird zuletzt besetzt', () => {
@@ -628,26 +654,43 @@ test('Der Platz an der Tür wird zuletzt besetzt', () => {
 
 /* ---------- Besprechungen ---------- */
 
+/** Den Besprechungsraum dort hinstellen, wo gerade Platz ist. Die Agenten bekommen ihre Schreibtische selbst. */
+const placeRoomWith = (game: Engine, companyId: string) => {
+  for (let i = 0; i < 12; i++) for (let j = 0; j < 10; j++) for (const rot of [0, 1, 2, 3] as const) {
+    try {
+      return game.placeItem(companyId, { kind: 'meeting', i, j, rot });
+    } catch {
+      // Dieser Platz passt nicht, der nächste.
+    }
+  }
+  throw new Error('Kein Platz für den Besprechungsraum');
+};
+const placeRoom = (companyId: string) => placeRoomWith(engine, companyId);
+
 const withRoom = (companyId: string) => {
   const c = engine.snapshot(companyId).company;
   c.buildPoints += 80;
-  return engine.placeItem(companyId, { kind: 'meeting', i: 1, j: 3, rot: 2 });
+  return placeRoom(companyId);
 };
 const meetingOf = (t: Awaited<ReturnType<typeof trio>>, extra = {}) => ({
   topic: 'Was bauen wir zuerst?', participantIds: [t.planner.id, t.worker.id, t.checker.id], moderatorId: t.planner.id, maxRounds: 2, limitEur: 1, ...extra,
 });
 const meetingCompany = async () => {
-  const company = newCompany();
-  const t = await trio(company.id);
+  const company = bigCompany();
+  // Der Raum kommt vor den Agenten, sonst nehmen deren Schreibtische den Platz weg.
   withRoom(company.id);
+  const t = await trio(company.id);
   return { company, t };
 };
 
 test('Eine Besprechung braucht Raum, Leute und Moderation', async () => {
-  const company = newCompany();
-  const t = await trio(company.id);
-  await assert.rejects(engine.startMeeting(company.id, meetingOf(t)), /Besprechungsraum/);
+  const bare = newCompany();
+  const tb = await trio(bare.id);
+  await assert.rejects(engine.startMeeting(bare.id, meetingOf(tb)), /Besprechungsraum/);
+
+  const company = bigCompany();
   withRoom(company.id);
+  const t = await trio(company.id);
   await assert.rejects(engine.startMeeting(company.id, meetingOf(t, { participantIds: [t.worker.id], moderatorId: t.worker.id })), /mindestens zwei/);
   await assert.rejects(engine.startMeeting(company.id, meetingOf(t, { participantIds: [t.worker.id, t.checker.id] })), /Moderation/);
   await assert.rejects(engine.startMeeting(company.id, meetingOf(t, { topic: ' ' })), /Worum/);
@@ -827,7 +870,7 @@ test('Ein Raum fasst nur eine Besprechung, und ein laufender Raum bleibt stehen'
   const meeting = await engine.startMeeting(company.id, meetingOf(t, { notes: '[szenario:haengt]' }));
   await assert.rejects(engine.startMeeting(company.id, meetingOf(t, { topic: 'Zweite' })), /belegt/);
   assert.throws(() => engine.moveItem(company.id, roomId, { i: 1, j: 3, rot: 3 }), /läuft gerade/);
-  assert.throws(() => { company.buildPoints = 500; engine.moveCompany(company.id, 'buero'); }, /Mitten in der Arbeit/);
+  assert.throws(() => { company.buildPoints = 500; engine.moveCompany(company.id, 'garage'); }, /Mitten in der Arbeit/);
   engine.stopMeeting(company.id, meeting.id);
   await until(() => meeting.status === 'stopped', 'Stopp');
 });
@@ -836,9 +879,13 @@ test('Eine Besprechung übersteht einen Neustart nur als angehaltene', async () 
   const data = fs.mkdtempSync(path.join(os.tmpdir(), 'sillyvalley-besprechung-'));
   const first = await makeEngine(data);
   const company = first.createCompany({ name: 'Runde', idea: 'x', locationId: 'garage', budgetEur: 5 });
+  company.buildPoints = 1000;
+  first.moveCompany(company.id, 'buero');
   company.buildPoints = 500;
-  first.placeItem(company.id, { kind: 'desk', i: 5, j: 3, rot: 2 });
-  first.placeItem(company.id, { kind: 'meeting', i: 1, j: 3, rot: 2 });
+  placeRoomWith(first, company.id);
+  // Beim Umzug ist der Startschreibtisch ins Inventar gewandert.
+  addDeskWith(first, company.id, 7, 1);
+  addDeskWith(first, company.id, 7, 4);
   const a = await first.hire(company.id, { name: 'Mila', roleId: 'planung', skillIds: [], modelId: 'claude-haiku-5-5', look: LOOK });
   const b = await first.hire(company.id, { name: 'Alex', roleId: 'text', skillIds: [], modelId: 'claude-haiku-5-5', look: LOOK });
   await until(() => a.hired && b.hired, 'Einstellungen');
@@ -1906,11 +1953,49 @@ test('Alles ist verschiebbar, auch was schon im Raum stand', () => {
   const bench = company.placed.find((p) => p.kind === 'workbench')!;
   assert.ok(bench, 'Die Garage bringt ihre Werkbank als Gegenstand mit');
   engine.moveItem(company.id, bench.id, { i: 3, j: 4, rot: 2 });
-  assert.deepEqual([bench.i, bench.j, bench.rot], [3, 4, 0], 'Er wandert, dreht sich aber nicht');
+  assert.deepEqual([bench.i, bench.j, bench.rot], [3, 4, 2], 'Er wandert und dreht sich mit');
   assert.throws(() => engine.placeItem(company.id, { kind: 'workbench', i: 0, j: 3, rot: 0 }), /gibt es nicht/, 'Kaufen lässt er sich nicht');
   // Wo er stand, ist jetzt Platz.
   company.buildPoints = 100;
   engine.placeItem(company.id, { kind: 'plant', i: 5, j: 0, rot: 0 });
+});
+
+test('Wände: setzen, nicht doppelt, nur zwischen Feldern im Raum, entfernen', () => {
+  const company = newCompany();
+  const points = company.buildPoints;
+  const wall = engine.placeItem(company.id, { kind: 'wall', i: 1, j: 1, rot: 0 });
+  assert.equal(company.buildPoints, points, 'Wände kosten nichts');
+  assert.equal(wall.kind, 'wall');
+  assert.throws(() => engine.placeItem(company.id, { kind: 'wall', i: 1, j: 1, rot: 0 }), /schon eine Wand/);
+  assert.throws(() => engine.placeItem(company.id, { kind: 'wall', i: 0, j: 0, rot: 0 }), /zwischen zwei Feldern/, 'Am Raumrand gibt es keine Wand');
+  engine.deleteItem(company.id, wall.id);
+  assert.ok(!company.placed.some((p) => p.id === wall.id));
+});
+
+test('Zonen: Ein Raum aus Wänden und Tür wird mit Tisch zum Besprechungsraum', () => {
+  const company = bigCompany();
+  company.buildPoints = 500;
+  const wall = (i: number, j: number, rot: 0 | 1) => engine.placeItem(company.id, { kind: 'wall', i, j, rot });
+  for (let j = 2; j <= 6; j++) if (j !== 4) wall(6, j, 1);
+  for (let i = 6; i <= 10; i++) {
+    wall(i, 2, 0);
+    wall(i, 7, 0);
+  }
+  assert.throws(() => engine.setZone(company.id, { i: 8, j: 4, kind: 'meeting', name: 'Runde' }), /kein eigener Raum/, 'Ohne Tür ist der Raum noch offen');
+  engine.placeItem(company.id, { kind: 'door', i: 6, j: 4, rot: 1 });
+  assert.throws(() => engine.placeItem(company.id, { kind: 'wall', i: 6, j: 4, rot: 1 }), /schon eine Tür/);
+  assert.throws(() => engine.setZone(company.id, { i: 1, j: 1, kind: 'meeting', name: 'Flur' }), /kein eigener Raum/, 'Der Rest des Büros ist keine Zone');
+  const zone = engine.setZone(company.id, { i: 8, j: 4, kind: 'meeting', name: 'Runde' });
+  assert.equal(meetingRooms(company).length, 0, 'Ohne Tisch kein Besprechungsraum');
+  const table = engine.placeItem(company.id, { kind: 'table', i: 7, j: 3, rot: 0 });
+  assert.deepEqual(meetingRooms(company).map((r) => r.id), [table.id]);
+  engine.placeItem(company.id, { kind: 'table', i: 9, j: 5, rot: 0 });
+  assert.deepEqual(meetingRooms(company).map((r) => r.id), [table.id], 'An der Wand fehlt ein Platz: Dieser Tisch zählt nicht');
+  const again = engine.setZone(company.id, { i: 9, j: 6, kind: 'break', name: 'Pause' });
+  assert.equal(again.id, zone.id, 'Ein Raum hat genau eine Zone');
+  assert.equal(meetingRooms(company).length, 0, 'Als Pausenraum finden dort keine Besprechungen statt');
+  engine.removeZone(company.id, zone.id);
+  assert.equal((company.zones ?? []).length, 0);
 });
 
 test('Inventar: einlagern, kostenlos neu platzieren, löschen ohne Erstattung', async () => {
@@ -2212,10 +2297,11 @@ test('Umzug: Das eigene Haus behält Anbau und Etagen', () => {
 });
 
 test('Hilfe: Ein Agent fragt im Auftrag einen Kollegen, wartet und arbeitet mit der Antwort weiter', async () => {
-  const company = newCompany();
+  const company = bigCompany();
   company.buildPoints = 500;
-  engine.placeItem(company.id, { kind: 'desk', i: 5, j: 3, rot: 0 });
-  const room = engine.placeItem(company.id, { kind: 'meeting', i: 2, j: 3, rot: 2 });
+  const room = placeRoom(company.id);
+  addDesk(company.id, 7, 1);
+  addDesk(company.id, 7, 4);
   const mila = await hired(company.id, 'Mila');
   const alex = await hired(company.id, 'Alex');
   const order = await engine.startOrder(company.id, orderInput(mila.id, 'Bericht', { notes: '[szenario:hilfe][an:Alex]' }));

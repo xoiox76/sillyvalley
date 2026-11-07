@@ -307,8 +307,11 @@ export const FURNITURE: FurnitureInfo[] = [
   { kind: 'ceoDesk', title: 'Chefschreibtisch', blurb: 'Dein Platz mit Pineapple-Laptop. Kostenlos, nur einmal, kein Platz für Mitarbeiter.', cost: 0, size: '2 × 2 Felder' },
   { kind: 'shelf', title: 'Regal', blurb: 'Hier liest dein Team im Firmenwissen.', cost: 25, size: '1 × 1 Feld' },
   { kind: 'coffee', title: 'Kaffeemaschine', blurb: 'Hier treffen sich freie Mitarbeiter.', cost: 20, size: '1 × 1 Feld' },
-  { kind: 'meeting', title: 'Besprechungsraum', blurb: 'Glasraum für bis zu vier Leute. Ohne ihn keine Besprechung.', cost: 80, size: '3 × 3 Felder' },
+  { kind: 'meeting', title: 'Besprechungsraum', blurb: 'Glasraum für bis zu vier Leute. Ohne ihn keine Besprechung.', cost: 80, size: '4 × 4 Felder' },
   { kind: 'plant', title: 'Pflanze', blurb: 'Macht das Büro wohnlicher.', cost: 10, size: '1 × 1 Feld' },
+  { kind: 'door', title: 'Tür', blurb: 'Eine Tür in einer Kante. Räume brauchen eine, damit man hineinkommt. Klick auf eine Tür entfernt sie.', cost: 0, size: '1 Kante' },
+  { kind: 'table', title: 'Besprechungstisch', blurb: 'Steht er in einem Raum, den du als Besprechungsraum benennst, finden dort Besprechungen statt.', cost: 40, size: '2 × 2 Felder' },
+  { kind: 'wall', title: 'Wand', blurb: 'Klick setzt den Anfang, ein zweiter Klick auf derselben Linie zieht die Wand. Klick auf eine Wand reißt sie ab.', cost: 0, size: '1 Kante' },
 ];
 
 /** Was schon im Raum steht. Es kostet nichts, lässt sich aber auch nicht nachkaufen. */

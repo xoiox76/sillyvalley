@@ -9,11 +9,20 @@ export interface Tile {
   j: number;
 }
 
-export const footprint = (kind: FurnitureKind): { w: number; d: number } =>
-  PROPS.find((p) => p.kind === kind) ?? (kind === 'desk' || kind === 'ceoDesk' ? { w: 2, d: 2 } : kind === 'meeting' ? { w: 3, d: 3 } : { w: 1, d: 1 });
+/** Die Grundfläche. Bei ungeraden Drehungen sind Breite und Tiefe vertauscht. */
+/** Der Besprechungsraum ist ein Glasquadrat mit dieser Kantenlänge in Feldern. */
+export const MEETING_SIZE = 4;
 
-export function occupiedTiles(item: Pick<PlacedItem, 'kind' | 'i' | 'j'>): Tile[] {
-  const { w, d } = footprint(item.kind);
+export const footprint = (kind: FurnitureKind, rot: Rotation | number = 0): { w: number; d: number } => {
+  // Wände und Türen liegen auf einer Kante und belegen kein Feld.
+  if (kind === 'wall' || kind === 'door') return { w: 0, d: 0 };
+  if (kind === 'table') return { w: 2, d: 2 };
+  const base = PROPS.find((p) => p.kind === kind) ?? (kind === 'desk' || kind === 'ceoDesk' ? { w: 2, d: 2 } : kind === 'meeting' ? { w: MEETING_SIZE, d: MEETING_SIZE } : { w: 1, d: 1 });
+  return rot % 2 === 1 ? { w: base.d, d: base.w } : { w: base.w, d: base.d };
+};
+
+export function occupiedTiles(item: Pick<PlacedItem, 'kind' | 'i' | 'j'> & { rot?: Rotation }): Tile[] {
+  const { w, d } = footprint(item.kind, item.rot);
   const out: Tile[] = [];
   for (let a = 0; a < w; a++) for (let b = 0; b < d; b++) out.push({ i: item.i + a, j: item.j + b });
   return out;
@@ -21,7 +30,12 @@ export function occupiedTiles(item: Pick<PlacedItem, 'kind' | 'i' | 'j'>): Tile[
 
 /** Der Tisch selbst blockiert; die Stuhlreihe bleibt begehbar. */
 export function blockingTiles(item: Pick<PlacedItem, 'kind' | 'i' | 'j' | 'rot'>): Tile[] {
-  if (item.kind === 'meeting') return [{ i: item.i + 1, j: item.j + 1 }];
+  if (item.kind === 'meeting') {
+    // Der Tisch steht in der Mitte, die Stühle drumherum bleiben begehbar.
+    const tiles: Tile[] = [];
+    for (let a = 1; a < MEETING_SIZE - 1; a++) for (let b = 1; b < MEETING_SIZE - 1; b++) tiles.push({ i: item.i + a, j: item.j + b });
+    return tiles;
+  }
   if (item.kind !== 'desk' && item.kind !== 'ceoDesk') return occupiedTiles(item);
   switch (item.rot) {
     case 0:
@@ -67,11 +81,12 @@ export interface RoomDoor {
 
 /** Die Drehung legt fest, in welcher Glaswand die Tür sitzt. */
 export function meetingDoor(item: Pick<PlacedItem, 'i' | 'j' | 'rot'>): RoomDoor {
+  const S = MEETING_SIZE;
   switch (item.rot) {
     case 0:
-      return { inside: { i: item.i + 2, j: item.j + 1 }, outside: { i: item.i + 3, j: item.j + 1 } };
+      return { inside: { i: item.i + S - 1, j: item.j + 1 }, outside: { i: item.i + S, j: item.j + 1 } };
     case 1:
-      return { inside: { i: item.i + 1, j: item.j + 2 }, outside: { i: item.i + 1, j: item.j + 3 } };
+      return { inside: { i: item.i + 1, j: item.j + S - 1 }, outside: { i: item.i + 1, j: item.j + S } };
     case 2:
       return { inside: { i: item.i, j: item.j + 1 }, outside: { i: item.i - 1, j: item.j + 1 } };
     default:
@@ -81,11 +96,13 @@ export function meetingDoor(item: Pick<PlacedItem, 'i' | 'j' | 'rot'>): RoomDoor
 
 /** Plätze rund um den Tisch. Der Platz an der Tür kommt zuletzt, damit niemand den Eingang besetzt. */
 export function meetingSeats(item: Pick<PlacedItem, 'i' | 'j' | 'rot'>): Seat[] {
+  const S = MEETING_SIZE;
+  // Je ein Platz an jeder Seite des 2 × 2-Tisches, an den Mitten der Kanten.
   const seats: Seat[] = [
     { i: item.i + 1.5, j: item.j + 0.5, tile: { i: item.i + 1, j: item.j }, facing: 'sw' },
     { i: item.i + 0.5, j: item.j + 1.5, tile: { i: item.i, j: item.j + 1 }, facing: 'se' },
-    { i: item.i + 2.5, j: item.j + 1.5, tile: { i: item.i + 2, j: item.j + 1 }, facing: 'nw' },
-    { i: item.i + 1.5, j: item.j + 2.5, tile: { i: item.i + 1, j: item.j + 2 }, facing: 'ne' },
+    { i: item.i + S - 0.5, j: item.j + 1.5, tile: { i: item.i + S - 1, j: item.j + 1 }, facing: 'nw' },
+    { i: item.i + 1.5, j: item.j + S - 0.5, tile: { i: item.i + 1, j: item.j + S - 1 }, facing: 'ne' },
   ];
   const door = key(meetingDoor(item).inside);
   return [...seats.filter((s) => key(s.tile) !== door), ...seats.filter((s) => key(s.tile) === door)];
@@ -93,9 +110,23 @@ export function meetingSeats(item: Pick<PlacedItem, 'i' | 'j' | 'rot'>): Seat[] 
 
 const edge = (a: Tile, b: Tile) => `${key(a)}>${key(b)}`;
 
-/** Glaswände sperren den Weg zwischen zwei Feldern, außer an der Tür. */
+/** Wände und Türen sitzen auf Kanten zwischen zwei Feldern. */
+export const isEdgeKind = (kind: FurnitureKind | string) => kind === 'wall' || kind === 'door';
+
+/** Die zwei Felder links und rechts einer Wandkante. rot 0 liegt auf der Linie j, rot 1 auf der Linie i. */
+export function wallSides(w: Pick<PlacedItem, 'i' | 'j' | 'rot'>): [Tile, Tile] {
+  return w.rot % 2 === 0 ? [{ i: w.i, j: w.j - 1 }, { i: w.i, j: w.j }] : [{ i: w.i - 1, j: w.j }, { i: w.i, j: w.j }];
+}
+
+/** Glaswände und Wände sperren den Weg zwischen zwei Feldern, außer an der Tür. */
 export function blockedEdges(items: Pick<PlacedItem, 'kind' | 'i' | 'j' | 'rot'>[]): Set<string> {
   const edges = new Set<string>();
+  for (const item of items) {
+    if (item.kind !== 'wall') continue;
+    const [a, b] = wallSides(item);
+    edges.add(edge(a, b));
+    edges.add(edge(b, a));
+  }
   for (const item of items) {
     if (item.kind !== 'meeting') continue;
     const door = meetingDoor(item);
@@ -104,14 +135,44 @@ export function blockedEdges(items: Pick<PlacedItem, 'kind' | 'i' | 'j' | 'rot'>
       edges.add(edge(a, b));
       edges.add(edge(b, a));
     };
-    for (let n = 0; n < 3; n++) {
+    const S = MEETING_SIZE;
+    for (let n = 0; n < S; n++) {
       wall({ i: item.i + n, j: item.j }, { i: item.i + n, j: item.j - 1 });
-      wall({ i: item.i + n, j: item.j + 2 }, { i: item.i + n, j: item.j + 3 });
+      wall({ i: item.i + n, j: item.j + S - 1 }, { i: item.i + n, j: item.j + S });
       wall({ i: item.i, j: item.j + n }, { i: item.i - 1, j: item.j + n });
-      wall({ i: item.i + 2, j: item.j + n }, { i: item.i + 3, j: item.j + n });
+      wall({ i: item.i + S - 1, j: item.j + n }, { i: item.i + S, j: item.j + n });
     }
   }
   return edges;
+}
+
+/** Wände, Türen und Glaswände trennen Räume. Durch Türen kommt man durch, deshalb zählen sie nur hier. */
+export function roomEdges(items: Pick<PlacedItem, 'kind' | 'i' | 'j' | 'rot'>[]): Set<string> {
+  const edges = blockedEdges(items);
+  for (const item of items) {
+    if (item.kind !== 'door') continue;
+    const [a, b] = wallSides(item);
+    edges.add(edge(a, b));
+    edges.add(edge(b, a));
+  }
+  return edges;
+}
+
+/** Der Raum um ein Feld: alle Felder, die man erreicht, ohne eine Wand, Tür oder Glaswand zu queren. */
+export function regionOf(loc: Pick<LocationInfo, 'w' | 'd'>, items: Pick<PlacedItem, 'kind' | 'i' | 'j' | 'rot'>[], start: Tile): Set<string> {
+  const edges = roomEdges(items);
+  const seen = new Set<string>([key(start)]);
+  const queue = [start];
+  for (let head = 0; head < queue.length; head++) {
+    const t = queue[head];
+    for (const [a, b] of NEIGHBOURS) {
+      const n = { i: t.i + a, j: t.j + b };
+      if (!inBounds(loc, n) || seen.has(key(n)) || edges.has(edge(t, n))) continue;
+      seen.add(key(n));
+      queue.push(n);
+    }
+  }
+  return seen;
 }
 
 export function blockedSet(loc: LocationInfo, items: PlacedItem[]): Set<string> {
@@ -159,6 +220,13 @@ export function checkPlacement(
   const tiles = occupiedTiles(candidate);
   if (tiles.some((t) => !inBounds(loc, t))) return { ok: false, reason: 'Das passt nicht in den Raum.' };
 
+  if (isEdgeKind(candidate.kind)) {
+    const [a, b] = wallSides(candidate);
+    if (!inBounds(loc, a) || !inBounds(loc, b)) return { ok: false, reason: 'Eine Wand steht zwischen zwei Feldern im Raum.' };
+    const same = others.find((o) => isEdgeKind(o.kind) && o.i === candidate.i && o.j === candidate.j && o.rot % 2 === candidate.rot % 2);
+    if (same) return { ok: false, reason: same.kind === 'door' ? 'Hier ist schon eine Tür.' : 'Hier steht schon eine Wand.' };
+  }
+
   const taken = new Set<string>();
   for (const other of others) for (const t of occupiedTiles(other)) taken.add(key(t));
   taken.add(key(loc.door));
@@ -174,6 +242,9 @@ export function checkPlacement(
       if (!reach.has(key(seatOf(item).tile))) return { ok: false, reason: 'Das versperrt den Weg zu einem Arbeitsplatz.' };
     } else if (item.kind === 'meeting') {
       if (!reach.has(key(meetingDoor(item).inside))) return { ok: false, reason: 'Die Tür wäre versperrt. Drehen legt fest, wo sie sitzt.' };
+    } else if (isEdgeKind(item.kind)) {
+      // Eine Wand ist nur eine Kante. Geprüft wird, dass alles weiter erreichbar bleibt.
+      continue;
     } else if (item.kind !== 'plant') {
       const open = NEIGHBOURS.some(([a, b]) => reach.has(key({ i: item.i + a, j: item.j + b })));
       if (!open) return { ok: false, reason: 'Das wäre danach nicht mehr erreichbar.' };

@@ -9,11 +9,13 @@ import { drawTownBehind, drawTownInFront } from './town.ts';
 import { siteAt, siteBase, storeyOf, buildingAt, checkShaft, floorOf, isShaft, itemsOnFloor, roomOf, shaftLanding } from '../../shared/building.ts';
 import { noteTaker, wallNotes, type BoardNote } from '../../shared/board.ts';
 import {
-  blockedEdges, blockedSet, checkDepartment, checkPlacement, findPath, footprint, inBounds, meetingDoor, meetingSeats, occupiedTiles, seatOf, standingTile,
+  MEETING_SIZE, blockedEdges, blockedSet, checkDepartment, checkPlacement, findPath, footprint, inBounds, meetingDoor, occupiedTiles, seatOf, standingTile,
   type Rect, type Seat, type Tile,
+  wallSides, isEdgeKind,
 } from '../../shared/layout.ts';
+import { ZONE_COLORS, roomSeats, zoneTiles } from '../../shared/zones.ts';
 import type { Agent, Company, Department, FurnitureKind, HelpRequest, PropKind, LiveKind, Meeting, PlacedItem, PlanStatus, Rotation, Shaft } from '../../shared/types.ts';
-import { stairSprite, type StairMode, ROOM_HEIGHT, drawLiftDoors, drawLiftFrame, liftShell, type LiftFace, chairBack, chairBase, ceoTable, deskTable, drawScreen, furnitureSprite, glassSegment, meetingFloor, meetingTable, propSprite, type Sprite } from './art.ts';
+import { doorSprite, wallSprite, stairSprite, type StairMode, ROOM_HEIGHT, drawLiftDoors, drawLiftFrame, liftShell, type LiftFace, chairBack, chairBase, ceoTable, deskTable, drawScreen, furnitureSprite, glassSegment, meetingFloor, meetingTable, propSprite, type Sprite } from './art.ts';
 import { characterSprite, type Pose, type View } from './characters.ts';
 import { Pen, fillPoly, layer, line, rect, type Ctx, type Layer } from './pixel.ts';
 import { buildRoom, waterPattern, type Room, WALL_H } from './room.ts';
@@ -22,7 +24,7 @@ const MOBILE_STATES: LiveKind[] = ['idle', 'done', 'stopped', 'handoff', 'meetin
 const WORKING: LiveKind[] = ['starting', 'thinking', 'answering', 'reading', 'writing', 'searching', 'waiting'];
 const WALK_SPEED = 2.4;
 /** Sichtbare Höhe in Pixeln, damit ein Klick auf den oberen Teil das Möbelstück trifft. */
-const ITEM_HEIGHT: Record<FurnitureKind, number> = { desk: 30, shelf: 42, coffee: 28, plant: 22, meeting: 36, ceoDesk: 30, stairs: 40, lift: 46, bed: 24, toybox: 18, 'desk-kid': 26, workbench: 28, boxes: 26, tires: 16, lockers: 42, sofa: 22 };
+const ITEM_HEIGHT: Record<FurnitureKind, number> = { wall: 50, door: 50, table: 24, desk: 30, shelf: 42, coffee: 28, plant: 22, meeting: 36, ceoDesk: 30, stairs: 40, lift: 46, bed: 24, toybox: 18, 'desk-kid': 26, workbench: 28, boxes: 26, tires: 16, lockers: 42, sofa: 22 };
 
 const CEO_KEYS: Record<string, Tile> = {
   ArrowUp: { i: 0, j: -1 }, w: { i: 0, j: -1 }, W: { i: 0, j: -1 },
@@ -35,10 +37,18 @@ const MAX_DEVICE_SCALE = 16;
 const WHEEL_STEP = 40;
 const REDUCED_MOTION = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
+export interface WallEdge {
+  i: number;
+  j: number;
+  rot: Rotation;
+}
+
 export type Ghost =
-  | { kind: FurnitureKind; id?: string; i: number; j: number; rot: Rotation }
+  | { kind: FurnitureKind; id?: string; i: number; j: number; rot: Rotation; run?: WallEdge[] }
   /** Ein Abteilungsbereich beim Abstecken. */
-  | { kind: 'zone'; id?: string; i: number; j: number; w: number; d: number };
+  | { kind: 'zone'; id?: string; i: number; j: number; w: number; d: number }
+  /** Ein Raum aus Wänden, der benannt werden soll. tiles: die Felder als "i,j". ok: ob er ein eigener Raum ist. */
+  | { kind: 'room'; id?: undefined; i: number; j: number; tiles: string[]; ok: boolean };
 
 /** Was eine freie Figur gerade zum Zeitvertreib tut. Nur Kulisse, nie ein Agentenzustand. */
 type Pause =
@@ -152,6 +162,9 @@ export interface WorldCallbacks {
   onAgentClick(agentId: string): void;
   onTileHover(tile: Tile | null): void;
   onTileClick(tile: Tile): void;
+  /** Eine Wand sitzt auf einer Kante, deshalb meldet die Oberfläche die Kante. */
+  onEdgeHover(edge: WallEdge | null): void;
+  onEdgeClick(edge: WallEdge): void;
   onItemClick(item: PlacedItem): void;
   onMeetingClick(meetingId: string): void;
   onDepartmentClick(departmentId: string): void;
@@ -186,6 +199,8 @@ export class World {
   private readonly labelEls = new Map<string, HTMLDivElement>();
   private readonly roomLabels = new Map<string, HTMLDivElement>();
   private readonly zoneLabels = new Map<string, HTMLDivElement>();
+  /** Namensschilder benannter Räume. */
+  private readonly roomZoneLabels = new Map<string, HTMLDivElement>();
   private readonly actors = new Map<string, Actor>();
   private company: Company | null = null;
   private room: Room | null = null;
@@ -677,6 +692,52 @@ export class World {
     return { x: (e.clientX - r.left) / this.scale, y: (e.clientY - r.top) / this.scale };
   }
 
+  /** Die Wandkante, die der Maus am nächsten liegt. Nur innerhalb des Raums. */
+  private edgeAt(x: number, y: number): WallEdge | null {
+    if (!this.room) return null;
+    const [ox, oy] = this.room.pen.pt(0, 0);
+    const dx = x - this.offX - ox;
+    const dy = y - this.offY - oy;
+    const fi = (dx / 16 + dy / 8) / 2;
+    const fj = (dy / 8 - dx / 16) / 2;
+    const li = Math.round(fi);
+    const lj = Math.round(fj);
+    // Die Linie, die näher liegt, gewinnt. Liegt die Maus auf einer Linie längs i, ist es eine Kante rot 0.
+    const edge: WallEdge = Math.abs(fj - lj) <= Math.abs(fi - li) ? { i: Math.floor(fi), j: lj, rot: 0 } : { i: li, j: Math.floor(fj), rot: 1 };
+    const loc = this.location();
+    const [a, b] = wallSides(edge);
+    const inside = (t: Tile) => t.i >= 0 && t.j >= 0 && t.i < loc.w && t.j < loc.d;
+    return inside(a) && inside(b) ? edge : null;
+  }
+
+  /**
+   * Eine Wand unter der Maus. Die Maus zeigt irgendwo auf den Körper der Wand, deshalb wird die Kante
+   * für mehrere Höhen zurückgerechnet, vom Fuß bis fast oben.
+   */
+  private wallAt(x: number, y: number): PlacedItem | null {
+    if (!this.room) return null;
+    const placed = itemsOnFloor(this.company?.placed ?? [], this.viewFloor).filter((p) => isEdgeKind(p.kind));
+    if (!placed.length) return null;
+    const [ox, oy] = this.room.pen.pt(0, 0);
+    const dx = x - this.offX - ox;
+    for (const h of [0, 10, 20, 30, 40]) {
+      const dy = y - this.offY - oy + h;
+      const fi = (dx / 16 + dy / 8) / 2;
+      const fj = (dy / 8 - dx / 16) / 2;
+      const li = Math.round(fi);
+      const lj = Math.round(fj);
+      if (Math.abs(fj - lj) < 0.3) {
+        const hit = placed.find((p) => p.rot === 0 && p.j === lj && p.i === Math.floor(fi));
+        if (hit) return hit;
+      }
+      if (Math.abs(fi - li) < 0.3) {
+        const hit = placed.find((p) => p.rot === 1 && p.i === li && p.j === Math.floor(fj));
+        if (hit) return hit;
+      }
+    }
+    return null;
+  }
+
   private tileAt(x: number, y: number): Tile | null {
     if (!this.room) return null;
     const [ox, oy] = this.room.pen.pt(0, 0);
@@ -718,7 +779,8 @@ export class World {
       const tile = this.tileAt(x, y + z);
       if (!tile) continue;
       const item = itemsOnFloor(this.company?.placed ?? [], this.viewFloor).find((p) => {
-        const size = footprint(p.kind);
+        if (isEdgeKind(p.kind)) return false;
+        const size = footprint(p.kind, p.rot);
         return z <= ITEM_HEIGHT[p.kind] && tile.i >= p.i && tile.j >= p.j && tile.i < p.i + size.w && tile.j < p.j + size.d;
       });
       if (item) return item;
@@ -781,7 +843,8 @@ export class World {
       }
     }
     const { x, y } = this.low(e);
-    this.callbacks.onTileHover(this.tileAt(x, y));
+    if (this.ghost && isEdgeKind(this.ghost.kind)) this.callbacks.onEdgeHover(this.edgeAt(x, y));
+    else this.callbacks.onTileHover(this.tileAt(x, y));
     this.canvas.style.cursor = this.ghost ? 'crosshair' : this.actorAt(x, y) || this.laptopAt(x, y) || this.doorAt(x, y) ? 'pointer' : 'default';
   }
 
@@ -793,6 +856,11 @@ export class World {
     }
     const { x, y } = this.low(e);
     if (this.ghost) {
+      if (isEdgeKind(this.ghost.kind)) {
+        const edge = this.edgeAt(x, y);
+        if (edge) this.callbacks.onEdgeClick(edge);
+        return;
+      }
       const tile = this.tileAt(x, y);
       if (tile) this.callbacks.onTileClick(tile);
       return;
@@ -824,8 +892,14 @@ export class World {
       }
       return;
     }
-    const item = this.itemAt(x, y);
+    // Eine Wand liegt dünn auf dem Boden. Ist die Maus nah genug dran, gewinnt sie gegen das Möbel daneben.
+    const item = this.wallAt(x, y) ?? this.itemAt(x, y);
     if (item) {
+      if (isEdgeKind(item.kind)) {
+        // Eine Wand wird wie ein Möbelstück gewählt. Entfernen geht über die Taste Entf.
+        this.callbacks.onItemClick(item);
+        return;
+      }
       if (item.kind === 'ceoDesk' && this.ceo.seated && this.ceo.sitAt === item.id) {
         this.callbacks.onLaptop();
         return;
@@ -1134,13 +1208,13 @@ export class World {
     const help = this.helpOf(agent);
     if (help?.roomId) {
       const helpRoom = company.placed.find((p) => p.id === help.roomId);
-      if (helpRoom) return meetingSeats(helpRoom)[help.fromId === agent.id ? 0 : 1] ?? null;
+      if (helpRoom) return roomSeats(helpRoom)[help.fromId === agent.id ? 0 : 1] ?? null;
     }
     const meeting = company.meetings?.find((m) => m.status === 'running' && m.participantIds.includes(agent.id));
     if (!meeting) return null;
     if (company.runs.some((r) => r.agentId === agent.id && r.status === 'running' && !r.meetingId)) return null;
     const room = company.placed.find((p) => p.id === meeting.roomId);
-    return room ? (meetingSeats(room)[meeting.participantIds.indexOf(agent.id)] ?? null) : null;
+    return room ? (roomSeats(room)[meeting.participantIds.indexOf(agent.id)] ?? null) : null;
   }
 
   private behave(actor: Actor, agent: Agent, now: number, dt: number): void {
@@ -1410,6 +1484,7 @@ export class World {
       el.remove();
       this.zoneLabels.delete(id);
     }
+    this.drawRoomZones(ctx, pen, company);
     if (storeyOf(this.viewFloor) === 0) this.drawBoard(pen);
 
     const items: { depth: number; draw: () => void }[] = [];
@@ -1419,8 +1494,8 @@ export class World {
     const busyDesks = new Set(company.agents.filter((a) => atDesk.includes(a.id)).map((a) => a.deskId));
     // Weiche Schatten unter allem, was im Raum steht. Sie halten die Möbel am Boden.
     for (const item of itemsOnFloor(company.placed, this.viewFloor)) {
-      if (item.kind === 'meeting' || (this.ghost && this.ghost.kind !== 'zone' && this.ghost.id === item.id)) continue;
-      const size = footprint(item.kind);
+      if (item.kind === 'meeting' || isEdgeKind(item.kind) || (this.ghost && this.ghost.kind !== 'zone' && this.ghost.id === item.id)) continue;
+      const size = footprint(item.kind, item.rot);
       for (const [grow, alpha] of [[0.14, 0.1], [0.04, 0.16]] as const) {
         fillPoly(ctx, [pen.pt(item.i + 0.08 - grow, item.j + 0.14), pen.pt(item.i + size.w + grow, item.j + 0.14), pen.pt(item.i + size.w + grow, item.j + size.d + grow), pen.pt(item.i + 0.08 - grow, item.j + size.d + grow)], `rgba(14,18,30,${alpha})`);
       }
@@ -1528,12 +1603,13 @@ export class World {
   /** Der leuchtende Rand zeigt, dass im Raum wirklich gerade eine Besprechung läuft. */
   private drawRoomGlow(ctx: Ctx, pen: Pen, room: PlacedItem, meeting: Meeting): void {
     const { i, j } = room;
-    const top = [pen.pt(i, j, ROOM_HEIGHT), pen.pt(i + 3, j, ROOM_HEIGHT), pen.pt(i + 3, j + 3, ROOM_HEIGHT), pen.pt(i, j + 3, ROOM_HEIGHT)];
+    const S = room.kind === 'table' ? 2 : MEETING_SIZE;
+    const top = [pen.pt(i, j, ROOM_HEIGHT), pen.pt(i + S, j, ROOM_HEIGHT), pen.pt(i + S, j + S, ROOM_HEIGHT), pen.pt(i, j + S, ROOM_HEIGHT)];
     const color = '#5eeac0';
     for (let n = 0; n < 4; n++) line(ctx, top[n][0], top[n][1], top[(n + 1) % 4][0], top[(n + 1) % 4][1], color);
-    const [fx, fy] = pen.pt(i + 3, j + 3);
-    const [lx, ly] = pen.pt(i, j + 3);
-    const [rx, ry] = pen.pt(i + 3, j);
+    const [fx, fy] = pen.pt(i + S, j + S);
+    const [lx, ly] = pen.pt(i, j + S);
+    const [rx, ry] = pen.pt(i + S, j);
     line(ctx, fx, fy, top[2][0], top[2][1], color);
     line(ctx, lx, ly, fx, fy, color);
     line(ctx, rx, ry, fx, fy, color);
@@ -1606,10 +1682,20 @@ export class World {
       items.push({ depth: item.i + 0.5 + item.j + 1, draw: () => this.drawSprite(ctx, stairSprite(mode), at()) });
       return;
     }
+    if (item.kind === 'wall' || item.kind === 'door') {
+      const sprite = item.kind === 'wall' ? wallSprite(item.rot) : doorSprite(item.rot);
+      items.push({ depth: item.i + item.j + 0.5, draw: () => this.drawSprite(ctx, sprite, at()) });
+      return;
+    }
+    if (item.kind === 'table') {
+      // Der Tisch des Glasraums, ohne Glas: gezeichnet um den Ursprung eines gedachten Raums ein Feld davor.
+      items.push({ depth: item.i + item.j + 2, draw: () => this.drawSprite(ctx, meetingTable(), pen.pt(item.i - 1, item.j - 1)) });
+      return;
+    }
     if (isProp(item.kind)) {
-      const size = footprint(item.kind);
+      const size = footprint(item.kind, item.rot);
       const kind = item.kind;
-      items.push({ depth: item.i + size.w / 2 + item.j + size.d / 2, draw: () => this.drawSprite(ctx, propSprite({ kind: kind as PropKind }), at()) });
+      items.push({ depth: item.i + size.w / 2 + item.j + size.d / 2, draw: () => this.drawSprite(ctx, propSprite({ kind: kind as PropKind, rot: item.rot }), at()) });
       return;
     }
     if (item.kind !== 'desk' && item.kind !== 'ceoDesk') {
@@ -1666,13 +1752,14 @@ export class World {
     const isDoor = (a: Tile, side: 'i+' | 'i-' | 'j+' | 'j-') =>
       a.i === door.i && a.j === door.j && ((side === 'i+' && item.rot === 0) || (side === 'j+' && item.rot === 1) || (side === 'i-' && item.rot === 2) || (side === 'j-' && item.rot === 3));
     items.push({ depth: i + j - 0.5, draw: () => this.drawSprite(ctx, meetingFloor(), pen.pt(i, j)) });
-    items.push({ depth: i + j + 3, draw: () => this.drawSprite(ctx, meetingTable(), pen.pt(i, j)) });
-    for (let n = 0; n < 3; n++) {
+    const S = MEETING_SIZE;
+    items.push({ depth: i + j + S, draw: () => this.drawSprite(ctx, meetingTable(), pen.pt(i, j)) });
+    for (let n = 0; n < S; n++) {
       const segments: { axis: 'i' | 'j'; door: boolean; at: [number, number]; depth: number }[] = [
         { axis: 'i', door: isDoor({ i: i + n, j }, 'j-'), at: [i + n, j], depth: i + n + 0.5 + j },
         { axis: 'j', door: isDoor({ i, j: j + n }, 'i-'), at: [i, j + n], depth: i + j + n + 0.5 },
-        { axis: 'i', door: isDoor({ i: i + n, j: j + 2 }, 'j+'), at: [i + n, j + 3], depth: i + n + 0.5 + j + 3 },
-        { axis: 'j', door: isDoor({ i: i + 2, j: j + n }, 'i+'), at: [i + 3, j + n], depth: i + 3 + j + n + 0.5 },
+        { axis: 'i', door: isDoor({ i: i + n, j: j + S - 1 }, 'j+'), at: [i + n, j + S], depth: i + n + 0.5 + j + S },
+        { axis: 'j', door: isDoor({ i: i + S - 1, j: j + n }, 'i+'), at: [i + S, j + n], depth: i + S + j + n + 0.5 },
       ];
       for (const segment of segments) {
         items.push({ depth: segment.depth, draw: () => this.drawSprite(ctx, glassSegment(segment.axis, segment.door), pen.pt(segment.at[0], segment.at[1])) });
@@ -1744,7 +1831,46 @@ export class World {
     }
   }
 
+  /** Benannte Räume: getönter Boden in der Farbe der Zonenart und ein Schild am obersten Feld. */
+  private drawRoomZones(ctx: Ctx, pen: Pen, company: Company): void {
+    const zones = (company.zones ?? []).filter((z) => floorOf(z) === this.viewFloor);
+    for (const zone of zones) {
+      const tiles = [...zoneTiles(company, zone)].map((k) => k.split(',').map(Number) as [number, number]);
+      this.tintTiles(ctx, pen, tiles, ZONE_COLORS[zone.kind], 0.14);
+      const top = tiles.reduce((a, b) => (b[0] + b[1] < a[0] + a[1] ? b : a), tiles[0]);
+      const [x, y] = pen.pt(top[0] + 0.5, top[1] + 0.5);
+      let el = this.roomZoneLabels.get(zone.id);
+      if (!el) {
+        el = document.createElement('div');
+        el.className = 'zone-label';
+        this.labels.append(el);
+        this.roomZoneLabels.set(zone.id, el);
+      }
+      if (el.textContent !== withoutEszett(zone.name)) el.textContent = withoutEszett(zone.name);
+      el.style.borderColor = ZONE_COLORS[zone.kind];
+      el.style.display = '';
+      el.style.transform = `translate(calc(${Math.round(x * this.scale)}px - 50%), calc(${Math.round((y + 2) * this.scale)}px - 100%))`;
+    }
+    for (const [id, el] of this.roomZoneLabels) {
+      if (zones.some((z) => z.id === id)) continue;
+      el.remove();
+      this.roomZoneLabels.delete(id);
+    }
+  }
+
+  private tintTiles(ctx: Ctx, pen: Pen, tiles: [number, number][], color: string, alpha: number): void {
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    for (const [i, j] of tiles) fillPoly(ctx, [pen.pt(i, j), pen.pt(i + 1, j), pen.pt(i + 1, j + 1), pen.pt(i, j + 1)], color);
+    ctx.restore();
+  }
+
   private drawGhost(ctx: Ctx, pen: Pen, ghost: Ghost, tick: number): void {
+    if (ghost.kind === 'room') {
+      const tiles = ghost.tiles.map((k) => k.split(',').map(Number) as [number, number]);
+      this.tintTiles(ctx, pen, tiles, ghost.ok ? '#5eeac0' : '#e5534b', 0.28 + (tick % 6 < 3 ? 0.06 : 0));
+      return;
+    }
     if (ghost.kind === 'zone') {
       const ok = checkDepartment(this.location(), this.company!.departments.filter((d) => floorOf(d) === this.viewFloor), ghost).ok;
       this.drawZone(ctx, pen, ghost, ok ? '#5eeac0' : '#e5534b', 0.3 + (tick % 6 < 3 ? 0.06 : 0), true);
@@ -1753,19 +1879,34 @@ export class World {
     const check = isShaft(ghost.kind) && !ghost.id
       ? checkShaft(this.company!, { kind: ghost.kind, i: ghost.i, j: ghost.j, rot: ghost.rot })
       : checkPlacement(this.location(), itemsOnFloor(this.company!.placed, this.viewFloor), ghost);
-    const size = footprint(ghost.kind);
+    const size = footprint(ghost.kind, ghost.rot);
     const color = check.ok ? '#5eeac0' : '#e5534b';
     ctx.save();
     ctx.globalAlpha = 0.34;
     fillPoly(ctx, [pen.pt(ghost.i, ghost.j), pen.pt(ghost.i + size.w, ghost.j), pen.pt(ghost.i + size.w, ghost.j + size.d), pen.pt(ghost.i, ghost.j + size.d)], color);
     ctx.globalAlpha = 0.72 + (tick % 6 < 3 ? 0.08 : 0);
     const at = pen.pt(ghost.i, ghost.j);
-    if (ghost.kind === 'meeting') {
+    if (ghost.kind === 'table') {
+      this.drawSprite(ctx, meetingTable(), pen.pt(ghost.i - 1, ghost.j - 1));
+    } else if (isEdgeKind(ghost.kind)) {
+      // Jede Kante des Zugs leuchtet. Liegt schon eine Wand dort, zeigt Bernstein: Ein Klick reißt sie ab.
+      const placed = itemsOnFloor(this.company!.placed, this.viewFloor);
+      const run = ghost.run ?? [{ i: ghost.i, j: ghost.j, rot: ghost.rot }];
+      const removing = !ghost.id && run.length === 1 && placed.some((p) => p.kind === ghost.kind && p.i === ghost.i && p.j === ghost.j && p.rot % 2 === ghost.rot % 2);
+      for (const seg of run) {
+        const { i, j } = seg;
+        const strip = seg.rot % 2 === 0
+          ? [pen.pt(i, j - 0.1), pen.pt(i + 1, j - 0.1), pen.pt(i + 1, j + 0.1), pen.pt(i, j + 0.1)]
+          : [pen.pt(i - 0.1, j), pen.pt(i - 0.1, j + 1), pen.pt(i + 0.1, j + 1), pen.pt(i + 0.1, j)];
+        fillPoly(ctx, strip, removing ? '#f8b62d' : color);
+        if (!removing) this.drawSprite(ctx, ghost.kind === 'door' ? doorSprite(seg.rot) : wallSprite(seg.rot), pen.pt(i, j));
+      }
+    } else if (ghost.kind === 'meeting') {
       const parts: { depth: number; draw: () => void }[] = [];
       this.addRoom(parts, ctx, pen, ghost);
       parts.sort((a, b) => a.depth - b.depth).forEach((part) => part.draw());
     } else if (isProp(ghost.kind)) {
-      this.drawSprite(ctx, propSprite({ kind: ghost.kind as PropKind }), at);
+      this.drawSprite(ctx, propSprite({ kind: ghost.kind as PropKind, rot: ghost.rot }), at);
       if (isShaft(ghost.kind) && !ghost.id) {
         // Das Feld davor bleibt frei. Hier kommen die Figuren an.
         const t = shaftLanding(ghost.kind, ghost.i, ghost.j, ghost.rot);

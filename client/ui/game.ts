@@ -4,22 +4,24 @@ import { chooseLanguage } from './language.ts';
 import type { Language } from '../i18n/translate.ts';
 import { locale } from '../i18n/translate.ts';
 import { marked } from 'marked';
-import { DEFAULT_CEO, LOOK_OPTIONS, NAME_IDEAS, ROLES, RULES, isProp, roleById, setExtraModels } from '../../shared/catalog.ts';
-import { checkDepartment, checkPlacement, rectFromCorners, type Tile } from '../../shared/layout.ts';
+import { DEFAULT_CEO, LOOK_OPTIONS, NAME_IDEAS, ROLES, RULES, roleById, setExtraModels } from '../../shared/catalog.ts';
+import { checkDepartment, checkPlacement, isEdgeKind, rectFromCorners, type Tile } from '../../shared/layout.ts';
 import { ROLE_TEMPLATE, parseRole, roleToMarkdown, withRoleColor } from '../../shared/roleMarkdown.ts';
 import { siteAt, siteBase, storeyOf, buildingAt, checkShaft, floorOf, isShaft, itemsOnFloor, roomOf } from '../../shared/building.ts';
 import type { Agent, BoardItem, FurnitureKind, ProjectAgent, LocationId, Look, PlacedItem, Rotation, Snapshot } from '../../shared/types.ts';
 import { parcelById } from '../../shared/town.ts';
 import type { City } from '../../shared/town.ts';
 import { TownView } from '../world/town.ts';
-import { World } from '../world/world.ts';
+import { World, type WallEdge } from '../world/world.ts';
 import { api, type FileEntry } from './api.ts';
 import { html, morph, type Safe, show } from './html.ts';
 import {
   buildPanel, suggestedLimit, contractModal, departmentModal, departmentOfAgent, financePanel, laptopModal, hireModal, noteModal, teamModal, liveNote, mandateModal, meetingModal, meetingPanel, notices, orderModal,
   projectsPanel, roomChips, teamPanel, topBar, townCard, townChips, viewerModal,
   type ContractView, type DepartmentDraft, type FilesDraft, type HireDraft, type NoteDraft, type TeamDraft, type WorkspaceFolds, type MandateDraft, type MeetingDraft, type OrderDraft, type OrderTeamDraft, type SelfStartMode, type ViewerState,
+  type RoomNaming,
 } from './views.ts';
+import { isSeparateRoom, regionAt, zoneAt } from '../../shared/zones.ts';
 
 type Tab = 'bauen' | 'team' | 'projekte' | 'finanzen';
 type Modal =
@@ -89,6 +91,10 @@ export function renderGame(root: HTMLElement, companyId: string, onLeave: () => 
   let projectAgents: ProjectAgent[] = [];
   let disconnected = false;
   let build: Build | null = null;
+  /** Beim Wand-Werkzeug: der erste Klick. Der zweite Klick auf derselben Linie zieht die Wand bis dorthin. */
+  let wallAnchor: WallEdge | null = null;
+  /** Raum benennen: erst in den Raum klicken, dann Zweck und Name eintragen. */
+  let roomMode: { target: Tile | null } | null = null;
   let buildMessage = '';
   let confirmDelete: string | null = null;
   let confirmFire: string | null = null;
@@ -128,13 +134,37 @@ export function renderGame(root: HTMLElement, companyId: string, onLeave: () => 
       render();
     },
     onTileHover(tile) {
+      if (roomMode && !roomMode.target) {
+        if (tile) showRoom(tile);
+        return;
+      }
       if (!build || !tile) return;
       build.tile = tile;
       syncGhost();
     },
+    onEdgeHover(edge) {
+      if (!build || !isEdgeKind(build.kind) || !edge) return;
+      build.tile = { i: edge.i, j: edge.j };
+      build.rot = edge.rot;
+      syncGhost();
+    },
+    onEdgeClick(edge) {
+      void wallClick(edge);
+    },
     onTileClick(tile) {
+      if (roomMode) {
+        roomMode.target = tile;
+        showRoom(tile);
+        render();
+        return;
+      }
       if (!build) return;
       build.tile = tile;
+      // Wände sitzen auf Kanten. Ein Feld-Klick (ohne Vorschau) zeigt nur die Vorschau, gesetzt wird über die Kante.
+      if (isEdgeKind(build.kind)) {
+        syncGhost();
+        return;
+      }
       if (build.kind === 'department') {
         if (!build.anchor) {
           build.anchor = tile;
@@ -286,12 +316,107 @@ export function renderGame(root: HTMLElement, companyId: string, onLeave: () => 
       world.setGhost({ kind: 'zone', id: build.departmentId, ...rect });
       return;
     }
+    if (isEdgeKind(build.kind) && !build.id) {
+      const here: WallEdge = { i: build.tile.i, j: build.tile.j, rot: build.rot };
+      const run = build.kind === 'wall' && wallAnchor ? wallRun(wallAnchor, here) : [here];
+      world.setGhost({ kind: build.kind, i: here.i, j: here.j, rot: here.rot, run });
+      return;
+    }
     world.setGhost({ kind: build.kind, id: build.id, i: build.tile.i, j: build.tile.j, rot: build.rot });
+  }
+
+  function showRoom(tile: Tile): void {
+    if (!snap) return;
+    const tiles = [...regionAt(snap.company, viewFloor, tile)];
+    world.setGhost({ kind: 'room', i: tile.i, j: tile.j, tiles, ok: isSeparateRoom(snap.company, viewFloor, tile) });
+  }
+
+  function roomNaming(): RoomNaming | null {
+    if (!roomMode || !snap) return null;
+    const target = roomMode.target;
+    return {
+      target,
+      zone: target ? (zoneAt(snap.company, viewFloor, target) ?? null) : null,
+      ok: target ? isSeparateRoom(snap.company, viewFloor, target) : false,
+    };
+  }
+
+  /** Alle Kanten vom Anfang bis zur Maus. Die Wand rastet auf der Linie des Anfangs ein. */
+  function wallRun(from: WallEdge, raw: WallEdge): WallEdge[] {
+    const to: WallEdge = from.rot === 0 ? { i: raw.i, j: from.j, rot: 0 } : { i: from.i, j: raw.j, rot: 1 };
+    const along = from.rot === 0 ? 'i' : 'j';
+    const lo = Math.min(from[along], to[along]);
+    const hi = Math.max(from[along], to[along]);
+    const run: WallEdge[] = [];
+    for (let n = lo; n <= hi; n++) run.push(from.rot === 0 ? { i: n, j: from.j, rot: 0 } : { i: from.i, j: n, rot: 1 });
+    return run;
+  }
+
+  function wallOn(edge: WallEdge, kind: FurnitureKind = 'wall'): PlacedItem | undefined {
+    return snap?.company.placed.find((p) => p.kind === kind && floorOf(p) === viewFloor && p.i === edge.i && p.j === edge.j && p.rot % 2 === edge.rot % 2);
+  }
+
+  /** Wand-Werkzeug: Klick auf eine Wand reißt sie ab, sonst Anfang setzen und mit dem zweiten Klick ziehen. */
+  async function wallClick(edge: WallEdge): Promise<void> {
+    if (!build || !isEdgeKind(build.kind) || !snap) return;
+    build.tile = { i: edge.i, j: edge.j };
+    build.rot = edge.rot;
+    if (build.id) {
+      // Eine gewählte Wand oder Tür wandert an die angeklickte Kante.
+      await placeBuild();
+      return;
+    }
+    const existing = wallOn(edge, build.kind);
+    if (build.kind === 'door') {
+      // Türen setzt man einzeln. Ein Klick auf eine Tür nimmt sie wieder heraus.
+      try {
+        if (existing) await api.deleteItem(companyId, existing.id);
+        else await api.placeItem(companyId, { kind: 'door', floor: viewFloor, i: edge.i, j: edge.j, rot: edge.rot });
+        buildMessage = '';
+      } catch (err) {
+        buildMessage = (err as Error).message;
+      }
+      syncGhost();
+      render();
+      return;
+    }
+    if (!wallAnchor && existing) {
+      try {
+        await api.deleteItem(companyId, existing.id);
+        buildMessage = '';
+      } catch (err) {
+        buildMessage = (err as Error).message;
+      }
+      syncGhost();
+      render();
+      return;
+    }
+    if (!wallAnchor) {
+      wallAnchor = edge;
+      buildMessage = '';
+      syncGhost();
+      render();
+      return;
+    }
+    const run = wallRun(wallAnchor, edge);
+    wallAnchor = null;
+    buildMessage = '';
+    for (const segment of run) {
+      if (wallOn(segment)) continue;
+      try {
+        await api.placeItem(companyId, { kind: 'wall', floor: viewFloor, i: segment.i, j: segment.j, rot: segment.rot });
+      } catch (err) {
+        buildMessage = (err as Error).message;
+        break;
+      }
+    }
+    syncGhost();
+    render();
   }
 
   function rotateBuild(): void {
     // Bei einem neuen Aufgang wählt die Drehung die Seite, auf der man ankommt.
-    if (!build || build.kind === 'department' || (isProp(build.kind) && !(isShaft(build.kind) && !build.id))) return;
+    if (!build || build.kind === 'department') return;
     build.rot = ((build.rot + 1) % 4) as Rotation;
     buildMessage = '';
     syncGhost();
@@ -336,6 +461,8 @@ export function renderGame(root: HTMLElement, companyId: string, onLeave: () => 
 
   function cancelBuild(): void {
     build = null;
+    wallAnchor = null;
+    roomMode = null;
     buildMessage = '';
     confirmDelete = null;
     syncGhost();
@@ -376,10 +503,6 @@ export function renderGame(root: HTMLElement, companyId: string, onLeave: () => 
   /** Dreht ein stehendes Möbelstück zur nächsten Richtung, in der es dort stehen darf. */
   async function rotateInPlace(item: PlacedItem): Promise<void> {
     if (!snap) return;
-    if (isProp(item.kind)) {
-      toast('info', 'Das lässt sich nicht drehen, aber du kannst es umstellen.');
-      return;
-    }
     const floor = floorOf(item);
     const loc = roomOf(snap.company, floor);
     for (let step = 1; step < 4; step++) {
@@ -1112,6 +1235,33 @@ export function renderGame(root: HTMLElement, companyId: string, onLeave: () => 
       syncGhost();
       render();
     },
+    'room-mode'() {
+      build = null;
+      wallAnchor = null;
+      roomMode = { target: null };
+      buildMessage = '';
+      world.setGhost(null);
+      render();
+    },
+    'room-cancel'() {
+      cancelBuild();
+    },
+    async 'room-save'() {
+      const target = roomMode?.target;
+      if (!target) return;
+      const kind = (els.panel.querySelector('select[name=zoneKind]') as HTMLSelectElement | null)?.value ?? 'other';
+      const name = (els.panel.querySelector('input[name=zoneName]') as HTMLInputElement | null)?.value ?? '';
+      try {
+        await api.setZone(companyId, { floor: viewFloor, i: target.i, j: target.j, kind, name });
+        cancelBuild();
+      } catch (err) {
+        buildMessage = (err as Error).message;
+        render();
+      }
+    },
+    async 'room-remove'(el) {
+      await api.removeZone(companyId, el.dataset.id!).catch(fail);
+    },
     'redo-department'(el) {
       const department = snap?.company.departments.find((d) => d.id === el.dataset.id);
       if (!department) return;
@@ -1777,7 +1927,7 @@ export function renderGame(root: HTMLElement, companyId: string, onLeave: () => 
     if (modal) {
       modal = null;
       render();
-    } else if (build) {
+    } else if (build || roomMode) {
       cancelBuild();
     }
   };
@@ -1813,7 +1963,7 @@ export function renderGame(root: HTMLElement, companyId: string, onLeave: () => 
     else if (tab === 'team') panel = teamPanel(snap, selectedAgent, selectedDepartment);
     else if (tab === 'projekte') panel = projectsPanel(snap, selectedOrder, selectedMandate, files, folds, selectedNote);
     else if (tab === 'finanzen') panel = financePanel(snap);
-    else if (tab === 'bauen') panel = buildPanel(snap, build?.kind ?? null, Boolean(build?.id), buildMessage, build?.kind === 'department' && build.anchor !== null, build?.inventoryId ?? null, confirmDelete, viewFloor < 100);
+    else if (tab === 'bauen') panel = buildPanel(snap, build?.kind ?? null, Boolean(build?.id), buildMessage, build?.kind === 'department' && build.anchor !== null, build?.inventoryId ?? null, confirmDelete, viewFloor < 100, roomNaming());
     if (panel) morph(els.panel, panel);
     // Eine neue Antwort soll sichtbar sein, ohne dass man erst danach suchen muss.
     const chatLength = snap.company.agents.find((a) => a.id === selectedAgent)?.chat.length ?? 0;

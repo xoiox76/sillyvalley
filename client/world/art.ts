@@ -1,7 +1,8 @@
 // Möbel und feste Einrichtung, aus isometrischen Quadern und Pixeln aufgebaut.
 // Jedes Motiv wird einmal in eine Ebene gerendert und danach nur noch kopiert.
 
-import type { FixedProp } from '../../shared/catalog.ts';
+import { PROPS, type FixedProp } from '../../shared/catalog.ts';
+import { MEETING_SIZE } from '../../shared/layout.ts';
 import type { Rotation } from '../../shared/types.ts';
 import { Pen, darken, layer, lighten, outline, rect, seeded, tri, type Faces, type Layer } from './pixel.ts';
 
@@ -28,6 +29,36 @@ function sprite(draw: (pen: Pen, l: Layer) => void, withOutline = true, size = C
   draw(new Pen(l.ctx, size.ax, size.ay), l);
   if (withOutline) outline(l, INK);
   return { canvas: l.canvas, ax: size.ax, ay: size.ay };
+}
+
+/** Eine Wandkante. Sie läuft von Feld zu Feld und hat dieselbe Höhe wie die Glaswände. */
+export function wallSprite(rot: Rotation): Sprite {
+  return cached(`wall${rot % 2}`, () =>
+    sprite((pen) => {
+      const face = tri('#d9dee6', 0.12);
+      if (rot % 2 === 0) pen.box(0, -0.07, 0, 1, 0.14, 50, face);
+      else pen.box(-0.07, 0, 0, 0.14, 1, 50, face);
+      // Ohne Umriss: Nebeneinander gesetzte Stücke laufen so als eine Wand durch, ohne Fugen.
+    }, false),
+  );
+}
+
+/** Eine Tür in einer Kante: Zarge mit Sturz, offen in der Mitte. */
+export function doorSprite(rot: Rotation): Sprite {
+  return cached(`door${rot % 2}`, () =>
+    sprite((pen) => {
+      const frame = tri('#7a5a3c', 0.12);
+      if (rot % 2 === 0) {
+        pen.box(0, -0.07, 0, 0.14, 0.14, 50, frame);
+        pen.box(0.86, -0.07, 0, 0.14, 0.14, 50, frame);
+        pen.box(0, -0.07, 40, 1, 0.14, 10, tri('#d9dee6', 0.12));
+      } else {
+        pen.box(-0.07, 0, 0, 0.14, 0.14, 50, frame);
+        pen.box(-0.07, 0.86, 0, 0.14, 0.14, 50, frame);
+        pen.box(-0.07, 0, 40, 0.14, 1, 10, tri('#d9dee6', 0.12));
+      }
+    }),
+  );
 }
 
 /** Für Treppen, die unter den Boden reichen: mehr Platz nach unten. */
@@ -278,9 +309,43 @@ export function stairSprite(mode: StairMode): Sprite {
   );
 }
 
-export function propSprite(prop: Pick<FixedProp, 'kind'>): Sprite {
-  return cached(`prop${prop.kind}`, () =>
-    sprite((pen) => {
+/** Nur die Teile, die Möbel mit Grundfläche und Wänden brauchen. Pen erfüllt sie. */
+export interface PropPen {
+  box(i: number, j: number, z: number, w: number, d: number, h: number, c: Faces): void;
+  faceJ(i: number, j: number, z: number, u: number, v: number, w: number, h: number, color: string): void;
+}
+
+/**
+ * Dreht ein Möbel um die Ecke seiner Grundfläche. Die Zeichnung bleibt in ihren Koordinaten,
+ * nur die Quader und Flächen werden auf die neue Ausrichtung abgebildet.
+ */
+function rotatePen(pen: Pen, rot: number, W: number, D: number): PropPen {
+  const map = (i: number, j: number): [number, number] => (rot === 0 ? [i, j] : rot === 1 ? [D - j, i] : rot === 2 ? [W - i, D - j] : [j, W - i]);
+  return {
+    box(i, j, z, w, d, h, c) {
+      const corners = [map(i, j), map(i + w, j), map(i, j + d), map(i + w, j + d)];
+      const i0 = Math.min(...corners.map((p) => p[0]));
+      const i1 = Math.max(...corners.map((p) => p[0]));
+      const j0 = Math.min(...corners.map((p) => p[1]));
+      const j1 = Math.max(...corners.map((p) => p[1]));
+      pen.box(i0, j0, z, i1 - i0, j1 - j0, h, c);
+    },
+    faceJ(i, j, z, u, v, w, h, color) {
+      // Eine Wandfläche wird am Ankerpunkt versetzt. Bei ungerader Drehung läuft sie dann an der anderen Seite.
+      const [a, b] = map(i, j);
+      pen.faceJ(a, b, z, u, v, w, h, color);
+    },
+  };
+}
+
+export function propSprite(prop: Pick<FixedProp, 'kind'> & { rot?: number }): Sprite {
+  const rot = prop.rot ?? 0;
+  const base = PROPS.find((p) => p.kind === prop.kind);
+  const W = base?.w ?? 1;
+  const D = base?.d ?? 1;
+  return cached(`prop${prop.kind}r${rot}`, () =>
+    sprite((raw) => {
+      const pen = rotatePen(raw, rot, W, D);
       switch (prop.kind) {
         case 'bed': {
           pen.box(0.04, 0.04, 0, 1.92, 0.14, 22, WOOD_DARK);
@@ -425,25 +490,28 @@ const FRAME = '#1c2a40';
 
 /** Teppich und Hocker. Liegt unter allem, was im Raum passiert. */
 export function meetingFloor(): Sprite {
+  const S = MEETING_SIZE;
   return cached('meetingfloor', () =>
     sprite((pen) => {
-      pen.floorPoly(0.1, 0.1, 2.8, 2.8, '#33536b');
-      pen.floorPoly(0.28, 0.28, 2.44, 2.44, '#456a84');
-      pen.floorPoly(0.42, 0.42, 2.16, 2.16, '#3b5e77');
-      for (const [x, y] of [[1.5, 0.5], [0.5, 1.5], [2.5, 1.5], [1.5, 2.5]]) pen.box(x - 0.2, y - 0.2, 0, 0.4, 0.4, 8, SEAT);
+      pen.floorPoly(0.1, 0.1, S - 0.2, S - 0.2, '#33536b');
+      pen.floorPoly(0.28, 0.28, S - 0.56, S - 0.56, '#456a84');
+      pen.floorPoly(0.42, 0.42, S - 0.84, S - 0.84, '#3b5e77');
+      for (const [x, y] of [[1.5, 0.5], [0.5, 1.5], [S - 0.5, 1.5], [2.5, S - 0.5]]) pen.box(x - 0.2, y - 0.2, 0, 0.4, 0.4, 8, SEAT);
     }, false),
   );
 }
 
 export function meetingTable(): Sprite {
+  // Der Tisch steht in der Mitte des Raums. c ist die Mitte in Feldern.
+  const c = MEETING_SIZE / 2;
   return cached('meetingtable', () =>
     sprite((pen) => {
-      for (const [x, y] of [[1.02, 1.02], [1.88, 1.02], [1.02, 1.88], [1.88, 1.88]]) pen.box(x, y, 0, 0.1, 0.1, 11, STEEL);
-      pen.box(0.86, 0.86, 11, 1.28, 1.28, 2, WOOD);
-      pen.box(1.14, 1.0, 13, 0.34, 0.26, 1, PLASTIC);
-      pen.box(1.56, 1.5, 13, 0.34, 0.26, 1, PLASTIC);
-      pen.box(1.06, 1.64, 13, 0.14, 0.14, 4, WHITE);
-      pen.box(1.72, 1.04, 13, 0.3, 0.2, 1, WHITE);
+      for (const [x, y] of [[c - 0.48, c - 0.48], [c + 0.38, c - 0.48], [c - 0.48, c + 0.38], [c + 0.38, c + 0.38]]) pen.box(x, y, 0, 0.1, 0.1, 11, STEEL);
+      pen.box(c - 0.64, c - 0.64, 11, 1.28, 1.28, 2, WOOD);
+      pen.box(c - 0.36, c - 0.5, 13, 0.34, 0.26, 1, PLASTIC);
+      pen.box(c + 0.06, c, 13, 0.34, 0.26, 1, PLASTIC);
+      pen.box(c - 0.44, c + 0.14, 13, 0.14, 0.14, 4, WHITE);
+      pen.box(c + 0.22, c - 0.46, 13, 0.3, 0.2, 1, WHITE);
     }),
   );
 }

@@ -10,14 +10,15 @@ import path from 'node:path';
 import { DEFAULT_CEO, LOOK_OPTIONS, DEPARTMENT_COLORS, FURNITURE, LOCATIONS, isProp, staffOf, MODELS, ROLES, RULES, SKILLS, commandRisks, furnitureByKind, locationById, modelById, roleById, skillById } from '../shared/catalog.ts';
 import type { Settings } from './settings.ts';
 import { openSprint, scrumMaster, sprintCommitted, sprintRows } from '../shared/scrum.ts';
-import { checkDepartment, checkPlacement, deskDepartment } from '../shared/layout.ts';
+import { checkDepartment, checkPlacement, deskDepartment, inBounds } from '../shared/layout.ts';
+import { ZONE_KINDS, isSeparateRoom, meetingRooms, zoneAt } from '../shared/zones.ts';
 import { SITE_STEP, baseFloorOf, siteAt, storeyOf, EXTEND_COST, SHAFT_COST, buildLimits, buildingAt, checkShaft, floorCost, floorOf, isShaft, itemsOnFloor, roomAt, roomOf, shaftLanding } from '../shared/building.ts';
 import { CITIES, HOME_ROOMS, parcelById, parcelOfLocation, placeById, startTown } from '../shared/town.ts';
 import type {
   CompanyRepo, OrderGit,
   Sprint,
   Agent, AgentLive, AgentOrigin, BoardItem, Building, CommandRequest, HelpRequest, Shaft, Company, CompanyRole, CompanySummary, Contract, Criterion, CustomSkill, Department, FurnitureKind, Job, Fx, LiveKind, Look, LocationId, Mandate, Meeting, Money,
-  Order, PlacedItem, PlanStatus, Pool, ProjectAgent, Proposal, ProviderInfo, Rotation, Run, RunKind, Snapshot, Stage, StageKind, SystemInfo, Team, Verdict,
+  Order, PlacedItem, PlanStatus, Pool, ProjectAgent, Proposal, ProviderInfo, Rotation, Run, RunKind, Snapshot, Stage, StageKind, SystemInfo, Team, Verdict, Zone, ZoneKind,
 } from '../shared/types.ts';
 import { emptyUsage } from '../shared/types.ts';
 import type { FxSource } from './fx.ts';
@@ -605,6 +606,42 @@ export class Engine {
   }
 
   /** Auflösen gibt das Budget zurück. Die Wissensablage bleibt, Baupunkte kommen nicht zurück. */
+  /** Gibt einem Raum aus Wänden und Türen Zweck und Namen. Hat er schon eine Zone, wird sie geändert. */
+  setZone(companyId: string, input: { floor?: number; i: number; j: number; kind: ZoneKind; name: string }): Zone {
+    const company = this.require(companyId);
+    const floor = this.checkFloor(company, input.floor);
+    if (!ZONE_KINDS.some((z) => z.kind === input.kind)) throw new GameError('Diese Zonenart gibt es nicht.');
+    const name = String(input.name ?? '').trim().slice(0, 40);
+    if (!name) throw new GameError('Gib der Zone einen Namen.');
+    const tile = { i: Number(input.i), j: Number(input.j) };
+    if (!inBounds(roomOf(company, floor), tile)) throw new GameError('Die Zone muss im Raum liegen.');
+    if (!isSeparateRoom(company, floor, tile)) throw new GameError('Das ist kein eigener Raum. Trenne ihn mit Wänden und einer Tür ab.');
+    company.zones ??= [];
+    const existing = zoneAt(company, floor, tile);
+    if (existing) {
+      if (existing.kind === 'meeting' && input.kind !== 'meeting' && company.meetings.some((m) => m.status === 'running' && company.placed.some((p) => p.id === m.roomId && p.kind === 'table' && zoneAt(company, floor, p) === existing))) {
+        throw new GameError('In diesem Raum läuft gerade eine Besprechung.');
+      }
+      Object.assign(existing, { kind: input.kind, name });
+      this.touch(company);
+      return existing;
+    }
+    const zone: Zone = { id: shortId(), kind: input.kind, name, ...(floor ? { floor } : {}), i: tile.i, j: tile.j };
+    company.zones.push(zone);
+    this.touch(company);
+    return zone;
+  }
+
+  removeZone(companyId: string, zoneId: string): void {
+    const company = this.require(companyId);
+    const zone = (company.zones ?? []).find((z) => z.id === zoneId);
+    if (!zone) throw new GameError('Diese Zone gibt es nicht.', 404);
+    const busy = zone.kind === 'meeting' && company.meetings.some((m) => m.status === 'running' && company.placed.some((p) => p.id === m.roomId && p.kind === 'table' && zoneAt(company, floorOf(zone), p) === zone));
+    if (busy) throw new GameError('In diesem Raum läuft gerade eine Besprechung.');
+    company.zones = (company.zones ?? []).filter((z) => z.id !== zoneId);
+    this.touch(company);
+  }
+
   dissolveDepartment(companyId: string, departmentId: string): void {
     const company = this.require(companyId);
     const department = this.departmentOf(company, departmentId);
@@ -1268,8 +1305,8 @@ export class Engine {
     if (!participantIds.includes(input.moderatorId)) throw new GameError('Die Moderation muss an der Besprechung teilnehmen.');
     const limitEur = roundLimit(input.limitEur);
     if (!(limitEur > 0)) throw new GameError('Eine Besprechung braucht ein Limit über 0 €.');
-    const rooms = company.placed.filter((p) => p.kind === 'meeting');
-    if (!rooms.length) throw new GameError('Für eine Besprechung braucht es einen Besprechungsraum. Stelle ihn unter Bauen auf.');
+    const rooms = meetingRooms(company);
+    if (!rooms.length) throw new GameError('Für eine Besprechung braucht es einen Besprechungsraum. Stelle ihn unter Bauen auf oder benenne einen Raum mit Tisch als Besprechungsraum.');
     const inUse = new Set(company.meetings.filter((m) => m.status === 'running').map((m) => m.roomId));
     const room = rooms.find((r) => !inUse.has(r.id));
     if (!room) throw new GameError('Der Besprechungsraum ist gerade belegt.');
@@ -1948,7 +1985,7 @@ export class Engine {
       ...company.meetings.filter((m) => m.status === 'running').map((m) => m.roomId),
       ...company.helps.filter((h) => h.status === 'running').map((h) => h.roomId),
     ]);
-    help.roomId = company.placed.find((p) => p.kind === 'meeting' && !busyRooms.has(p.id))?.id ?? null;
+    help.roomId = meetingRooms(company).find((p) => !busyRooms.has(p.id))?.id ?? null;
     help.status = 'running';
     this.setLive(from, 'waiting', `fragt ${to.name}`, null);
     await this.startRun(company, to, {
@@ -2533,7 +2570,7 @@ export class Engine {
     // Den Chefplatz gibt es einmal. Liegt er im Inventar, kommt er von dort.
     if (!stored && kind === 'ceoDesk' && [...company.placed, ...company.inventory].some((p) => p.kind === 'ceoDesk')) throw new GameError('Du hast schon einen Chefschreibtisch.');
     assertRotation(input.rot);
-    const rot = isProp(kind) ? 0 : input.rot;
+    const rot = input.rot;
     if (info) this.assertBuildPoints(company, info.cost);
     const floor = this.checkFloor(company, input.floor);
     const check = checkPlacement(roomOf(company, floor), itemsOnFloor(company.placed, floor), { kind, i: input.i, j: input.j, rot });
@@ -2595,7 +2632,7 @@ export class Engine {
     const floor = this.checkFloor(company, input.floor ?? floorOf(item));
     const check = checkPlacement(roomOf(company, floor), itemsOnFloor(company.placed, floor), { ...item, i: input.i, j: input.j, rot: input.rot });
     if (!check.ok) throw new GameError(check.reason);
-    Object.assign(item, { i: input.i, j: input.j, rot: isProp(item.kind) ? 0 : input.rot });
+    Object.assign(item, { i: input.i, j: input.j, rot: input.rot });
     if (floor) item.floor = floor;
     else delete item.floor;
     this.touch(company);

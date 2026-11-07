@@ -393,6 +393,14 @@ async function route(engine: Engine, req: IncomingMessage, res: ServerResponse, 
     }
   }
 
+  if (section === 'zones') {
+    if (parts.length === 3 && method === 'POST') return sendJson(res, 201, engine.setZone(id, await readJson(req)));
+    if (parts.length === 4 && method === 'DELETE') {
+      engine.removeZone(id, parts[3]);
+      return sendJson(res, 200, {});
+    }
+  }
+
   if (section === 'mandates') {
     if (parts.length === 3 && method === 'POST') return sendJson(res, 201, await engine.startMandate(id, await readJson(req)));
     if (parts.length === 5 && method === 'POST') {
