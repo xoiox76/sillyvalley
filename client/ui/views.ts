@@ -54,7 +54,21 @@ export interface NoteDraft {
   note?: BoardItem;
 }
 
-export type LaptopApp = 'hilfe' | 'nachrichten' | 'browser' | 'roadmap' | 'dateien' | 'akten' | 'rollen' | 'sprint' | 'einstellungen';
+export type LaptopApp = 'hilfe' | 'nachrichten' | 'browser' | 'roadmap' | 'dateien' | 'akten' | 'rollen' | 'teams' | 'sprint' | 'einstellungen';
+
+/** Ein Team im Teamprogramm, wie es gerade bearbeitet wird. */
+export interface TeamWork {
+  id: string | null;
+  name: string;
+  purpose: string;
+  leadId: string | null;
+  roles: { key: string; id: string | null; title: string; companyRoleId: string | null; memberIds: string[] }[];
+  /** Wer schon im Team ist, aber noch keine Rolle hat. Bleibt beim Speichern im Team. */
+  extraIds: string[];
+  error: string;
+  note: string;
+  busy: boolean;
+}
 
 export interface FilesDraft {
   /** null: der Schreibtisch von PineappleOS, kein Programm offen. */
@@ -82,6 +96,8 @@ export interface FilesDraft {
   roleKey: number;
   roleError: string;
   roleNote: string;
+  /** Das Teamprogramm: das offene Team. null: keines gewählt. */
+  team: TeamWork | null;
 }
 
 export interface TeamDraft {
@@ -806,6 +822,7 @@ function laptopApps(s: Snapshot, files: FileEntry[]): { id: LaptopApp; title: st
     { id: 'dateien', title: 'Dateien', hint: `Dateien der Firma, ${files.length} insgesamt`, glyph: '▤', badge: 0 },
     { id: 'akten', title: 'Akten', hint: 'Mitarbeiterakten mit Kosten und Ergebnissen', glyph: '☰', badge: 0 },
     { id: 'rollen', title: 'Rollen', hint: 'Rollen als Markdown definieren', glyph: '#', badge: 0 },
+    { id: 'teams', title: 'Teams', hint: 'Team anlegen: Manager, Rollen, Besetzung', glyph: '⚑', badge: 0 },
     ...(sprintPlanner(company) || sprint || (company.sprints ?? []).length
       ? [{ id: 'sprint' as const, title: 'Sprint', hint: sprint ? `Sprint ${sprint.number}: ${SPRINT_STATUS[sprint.status]}` : 'Kein Sprint offen', glyph: '▦', badge: 0 }]
       : []),
@@ -832,6 +849,7 @@ export function laptopModal(s: Snapshot, draft: FilesDraft, projectAgents: Proje
     : id === 'roadmap' ? roadmapApp(s, draft)
     : id === 'einstellungen' ? settingsApp(s, draft)
     : id === 'rollen' ? rolesApp(s, draft)
+    : id === 'teams' ? teamsApp(s, draft)
     : id === 'dateien' ? shellApp(s, draft, files, folds, companyId)
     : id === 'sprint' ? sprintApp(s)
     : filesApp(s, draft, confirmFire);
@@ -1267,6 +1285,73 @@ function rolesApp(s: Snapshot, draft: FilesDraft): Safe {
   </div>`;
 }
 
+/** Das Teamprogramm: erst die Leitung, dann die Rollen, dann wer welche Rolle ausfüllt. */
+function teamsApp(s: Snapshot, draft: FilesDraft): Safe {
+  const { company } = s;
+  const hired = company.agents.filter((a) => a.hired);
+  const work = draft.team;
+  const nameOf = (id: string) => company.agents.find((a) => a.id === id)?.name ?? '';
+  const nav = html`<nav class="files-list" aria-label="Teams">
+    <button class="btn btn-small btn-wide" data-action="teams-new" ${hired.length ? '' : 'disabled'}>Neues Team</button>
+    <ul class="agent-list">${company.teams.map((t) => {
+      const roles = t.roles ?? [];
+      return html`<li data-key="${t.id}"><button class="agent-row ${t.id === work?.id ? 'selected' : ''}" data-action="teams-open" data-id="${t.id}" aria-pressed="${t.id === work?.id}">
+        <span class="agent-row-text"><strong>${t.name}</strong><small>${t.leadId ? `Leitung: ${nameOf(t.leadId)}` : 'Ohne Leitung'}, ${roles.length === 1 ? '1 Rolle' : `${roles.length} Rollen`}</small></span>
+      </button></li>`;
+    })}</ul>
+  </nav>`;
+  if (!work) {
+    return html`<div class="modal-body files-grid">${nav}<section class="team-builder" data-key="team-empty">
+      <p class="hint">${hired.length ? (company.teams.length ? 'Wähle links ein Team oder lege ein neues an.' : 'Noch kein Team. Lege links eines an.') : 'Stelle zuerst jemanden ein.'}</p>
+    </section></div>`;
+  }
+  const face = (a: Agent) => html`<img class="portrait portrait-tiny" src="${portrait(a.look)}" alt="" />`;
+  const taken = new Set(work.roles.map((r) => r.companyRoleId).filter(Boolean));
+  const offered = rolesOf(company).filter((r) => !taken.has(r.id));
+  return html`<div class="modal-body files-grid">${nav}
+    <section class="team-builder" data-key="team-${work.id ?? 'neu'}">
+      <h4>1. Name und Zweck</h4>
+      <label class="field"><span>Name</span><input data-team-field="name" maxlength="40" autocomplete="off" value="${work.name}" placeholder="Zum Beispiel: Produktteam" /></label>
+      <label class="field"><span>Zweck (optional)</span><textarea data-team-field="purpose" rows="2" maxlength="2000" placeholder="Die Leitung liest das, wenn sie ein Projekt verteilt.">${work.purpose}</textarea></label>
+
+      <h4>2. Manager</h4>
+      <div class="toggle-row" role="radiogroup" aria-label="Manager">
+        ${hired.map((a) => html`<button type="button" class="toggle ${a.id === work.leadId ? 'on' : ''}" role="radio" aria-checked="${a.id === work.leadId}" data-action="teams-lead" data-id="${a.id}" data-key="${a.id}">${face(a)} ${a.name}</button>`)}
+      </div>
+      <p class="hint">Der Manager nimmt Projekte an das Team entgegen und verteilt die Arbeit nach den Rollen.</p>
+
+      ${work.leadId ? html`<h4 data-key="h-roles">3. Rollen</h4>
+      ${work.roles.length ? html`<ul class="team-roles" data-key="roles">${work.roles.map((r) => html`<li data-key="${r.key}"><span>${r.title}</span>
+        <button type="button" class="icon-btn" data-action="teams-role-remove" data-id="${r.key}" aria-label="${r.title} entfernen">×</button></li>`)}</ul>` : html`<p class="hint" data-key="roles-none">Noch keine Rolle im Team.</p>`}
+      ${offered.length ? html`<div class="toggle-row" data-key="roles-offered">${offered.map((r) => html`<button type="button" class="toggle" data-action="teams-role-add" data-id="${r.id}" data-key="${r.id}">+ ${r.title}</button>`)}</div>` : null}
+      <div class="inline-form" data-key="role-free">
+        <label class="visually-hidden" for="team-role-title">Eigener Rollentitel</label>
+        <input id="team-role-title" data-team-role-title maxlength="60" autocomplete="off" placeholder="Eigene Rolle, zum Beispiel: Tester" />
+        <button type="button" class="btn btn-small" data-action="teams-role-add">Rolle hinzufügen</button>
+      </div>` : html`<p class="hint" data-key="roles-wait">Wähle zuerst einen Manager. Danach legst du die Rollen fest.</p>`}
+
+      ${work.leadId && work.roles.length ? html`<h4 data-key="h-assign">4. Mitarbeiter zuordnen</h4>
+      ${work.roles.map((r) => html`<fieldset class="field" data-key="assign-${r.key}"><legend>${r.title}${r.memberIds.length ? '' : ' (unbesetzt)'}</legend>
+        <div class="toggle-row">${hired.map((a) => {
+          const on = r.memberIds.includes(a.id);
+          return html`<button type="button" class="toggle ${on ? 'on' : ''}" aria-pressed="${on}" data-action="teams-assign" data-role="${r.key}" data-id="${a.id}" data-key="${a.id}">${face(a)} ${a.name}</button>`;
+        })}</div>
+      </fieldset>`)}` : null}
+
+      ${work.extraIds.length ? html`<h4 data-key="h-extra">Im Team ohne Rolle</h4>
+      <div class="toggle-row" data-key="extra">${work.extraIds.map((id) => html`<button type="button" class="toggle on" data-action="teams-extra-remove" data-id="${id}" data-key="${id}" title="Aus dem Team nehmen">${nameOf(id)} ×</button>`)}</div>` : null}
+
+      ${work.error ? html`<p class="form-error" role="alert">${work.error}</p>` : null}
+      ${work.note ? html`<p class="hint">${work.note}</p>` : null}
+      <div class="btn-row">
+        <button class="btn btn-primary btn-small" data-action="teams-save" ${work.busy || !work.leadId ? 'disabled' : ''}>Speichern</button>
+        ${work.id ? html`<button class="btn btn-small" data-action="open-mandate" data-team="${work.id}">Projekt geben</button>
+        <button class="btn btn-small" data-action="teams-delete" data-id="${work.id}">Auflösen</button>` : null}
+      </div>
+    </section>
+  </div>`;
+}
+
 function filesApp(s: Snapshot, draft: FilesDraft, confirmFire: string | null): Safe {
   const { company } = s;
   const current = staffOf(company).filter((a) => a.hired);
@@ -1288,12 +1373,43 @@ function filesApp(s: Snapshot, draft: FilesDraft, confirmFire: string | null): S
     </div>`;
 }
 
+/** Woran jemand gerade arbeitet: der laufende Lauf, offene Aufträge, Projekte, Besprechungen und Teamrollen. */
+function currentWork(s: Snapshot, agent: Agent): Safe {
+  const { company } = s;
+  if (agent.firedAt) return html``;
+  const run = activeRun(company, agent.id);
+  const runOrder = run?.orderId ? company.orders.find((o) => o.id === run.orderId) : null;
+  const orders = company.orders.filter((o) => (o.status === 'running' || o.status === 'review') && o.stages.some((st) => st.agentId === agent.id));
+  const projects = company.mandates.filter((m) => m.managerId === agent.id && m.status !== 'closed');
+  const meetings = company.meetings.filter((m) => !['closed', 'failed', 'stopped'].includes(m.status) && (m.moderatorId === agent.id || m.participantIds.includes(agent.id)));
+  const places = company.teams.flatMap((t) => [
+    ...(t.leadId === agent.id ? [`${t.name}: Manager`] : []),
+    ...(t.roles ?? []).filter((r) => r.memberIds.includes(agent.id)).map((r) => `${t.name}: ${r.title}`),
+  ]);
+  const lines: Safe[] = [
+    ...(run ? [html`<li data-key="run"><div class="team-head"><strong>${runOrder ? runOrder.title : RUN_KIND[run.kind]}</strong><span class="chip chip-order-running">Arbeitet jetzt</span></div>
+      <small>${RUN_KIND[run.kind]}${run.stageKind ? `, ${STAGE_TITLE[run.stageKind]}` : ''}</small></li>`] : []),
+    ...orders.filter((o) => o.id !== runOrder?.id).map((o) => {
+      const own = o.stages.filter((st) => st.agentId === agent.id).map((st) => STAGE_TITLE[st.kind]).join(', ');
+      return html`<li data-key="${o.id}"><div class="team-head"><strong>${o.title}</strong><span class="chip chip-order-${o.status}">${ORDER_STATUS[o.status]}</span></div><small>${own}</small></li>`;
+    }),
+    ...projects.map((m) => html`<li data-key="${m.id}"><div class="team-head"><strong>${m.goal}</strong><span class="chip chip-mandate-${m.status}">${MANDATE_STATUS[m.status]}</span></div><small>Leitet das Projekt</small></li>`),
+    ...meetings.map((m) => html`<li data-key="${m.id}"><div class="team-head"><strong>${m.topic}</strong><span class="chip">Besprechung</span></div></li>`),
+  ];
+  return html`<h4>Gerade dran</h4>
+    ${lines.length ? html`<ul class="file-results">${lines}</ul>` : html`<p class="hint">Gerade nichts offen.</p>`}
+    ${places.length ? html`<dl class="facts"><div><dt>Rollen in Teams</dt><dd>${places.join(', ')}</dd></div></dl>` : null}`;
+}
+
 function agentFile(s: Snapshot, agent: Agent, confirmFire: string | null): Safe {
   const { company, system } = s;
   const runs = company.runs.filter((r) => r.agentId === agent.id && r.status !== 'running');
   const spent = agentSpent(company, agent.id);
   const work = company.orders.filter((o) => o.stages.some((stage) => stage.agentId === agent.id)).reverse();
-  const accepted = work.filter((o) => o.status === 'accepted').length;
+  // Was noch läuft oder auf die Abnahme wartet, steht unter "Gerade dran".
+  const done = work.filter((o) => o.status !== 'running' && o.status !== 'review');
+  const accepted = done.filter((o) => o.status === 'accepted').length;
+  const led = company.mandates.filter((m) => m.managerId === agent.id && m.status === 'closed').reverse();
   const brought = agent.startSkillIds ?? agent.skillIds;
   const learned = agent.skillIds.filter((id) => !brought.includes(id));
   const average = averageRunEur(company, agent.id);
@@ -1302,6 +1418,7 @@ function agentFile(s: Snapshot, agent: Agent, confirmFire: string | null): Safe 
   const otherSkills = [...SKILLS, ...company.customSkills].filter((skill) => !agent.skillIds.includes(skill.id));
   return html`<article class="file-card" data-key="file-${agent.id}">
     <div class="team-head"><span class="file-name"><img class="portrait" src="${portrait(agent.look)}" alt="" /><span><strong>${agent.name}</strong><small>${agentTitle(agent)}${agent.firedAt ? `, gekündigt am ${time(agent.firedAt)}` : ''}</small></span></span></div>
+    ${currentWork(s, agent)}
     <h4>Stelle</h4>
     <dl class="facts">
       <div><dt>Rolle</dt><dd>${agentTitle(agent)}</dd></div>
@@ -1337,8 +1454,9 @@ function agentFile(s: Snapshot, agent: Agent, confirmFire: string | null): Safe 
       return html`<button type="button" class="toggle ${on ? 'on' : ''}" aria-pressed="${on}" data-action="files-team" data-id="${team.id}" data-agent="${agent.id}" data-key="${team.id}">${team.name}${team.leadId === agent.id ? ' (Leitung)' : ''}</button>`;
     })}</div>` : html`<p class="hint">Noch kein Team. Lege im Team-Tab eines an.</p>`}`}
 
-    <h4>Ergebnisse${work.length ? ` (${accepted} von ${work.length} abgenommen)` : ''}</h4>
-    ${work.length ? html`<ul class="file-results">${work.map((order) => {
+    <h4>Bisherige Arbeit${done.length ? ` (${accepted} von ${done.length} abgenommen)` : ''}</h4>
+    ${led.length ? html`<ul class="file-results">${led.map((m) => html`<li data-key="${m.id}"><div class="team-head"><strong>${m.goal}</strong><span class="chip">Projekt geleitet</span></div></li>`)}</ul>` : null}
+    ${done.length ? html`<ul class="file-results">${done.map((order) => {
       const own = order.stages.filter((stage) => stage.agentId === agent.id);
       const files = [...new Set(own.flatMap((stage) => stage.files))].filter((f) => !/pruefung-\d+\.md$/.test(f));
       const cost = company.runs.filter((r) => r.orderId === order.id && r.agentId === agent.id).reduce((sum, r) => sum + r.costEur, 0);
@@ -1347,7 +1465,7 @@ function agentFile(s: Snapshot, agent: Agent, confirmFire: string | null): Safe 
         <small>${own.map((stage) => STAGE_TITLE[stage.kind]).join(', ')}, ${eur(cost)}</small>
         ${files.length ? html`<div class="toggle-row">${files.map((f) => html`<button type="button" class="text-btn" data-action="open-file" data-path="${f}" data-key="${f}">${f.split('/').pop()}</button>`)}</div>` : null}
       </li>`;
-    })}</ul>` : html`<p class="hint">Noch keine Aufträge.</p>`}
+    })}</ul>` : led.length ? null : html`<p class="hint">Noch nichts abgeschlossen.</p>`}
       ${agent.hired ? html`<details class="activity" data-key="job-edit-${agent.id}">
         <summary>Stelle und Fähigkeiten ändern</summary>
         <form class="revise-form" data-form="job" data-id="${agent.id}">
@@ -1946,10 +2064,10 @@ export function noteModal(draft: NoteDraft): Safe {
 /** Die Tafel: was Agenten vorschlagen und noch niemand bekommen hat. */
 /** Der Bau-Katalog nach Zweck, wie in einem Bauspiel. */
 const CATALOG_GROUPS: { id: string; title: string; kinds: string[] }[] = [
-  { id: 'bauen', title: 'Bauen', kinds: ['roomwalls', 'wall', 'door', 'window', 'glass'] },
+  { id: 'bauen', title: 'Bauen', kinds: ['roomwalls', 'wall', 'half', 'fence', 'door', 'window', 'glass', 'column', 'steps'] },
   { id: 'arbeit', title: 'Arbeiten', kinds: ['desk', 'ceoDesk', 'table', 'meeting', 'board', 'shelf'] },
   { id: 'freizeit', title: 'Freizeit', kinds: ['coffee', 'sofa', 'beanbag', 'arcade'] },
-  { id: 'deko', title: 'Deko', kinds: ['plant'] },
+  { id: 'deko', title: 'Deko', kinds: ['plant', 'picture', 'wallLamp', 'wallShelf', 'clock'] },
   { id: 'bereiche', title: 'Bereiche', kinds: ['department'] },
 ];
 
@@ -2307,20 +2425,71 @@ export interface RoomNaming {
   ok: boolean;
 }
 
-export function buildPanel(s: Snapshot, buildKind: string | null, moving: boolean, message: string, anchored: boolean, inventoryId: string | null = null, confirmDelete: string | null = null, atHead = true, room: RoomNaming | null = null, wallsLow = false, paintColor: string | null = null): Safe {
+/** Farbe für die Knöpfe der Bodenbeläge. */
+const FLOOR_SWATCH: Record<string, string> = { holz: '#a57d58', teppich: '#4f6f8f', fliesen: '#d6dde2', beton: '#85888b', parkett: '#9b6b3f', marmor: '#e2ddd3', teppichRot: '#8c2f35', linoleum: '#7fa58a' };
+
+export interface BuildTools {
+  /** Pipette aktiv. */
+  pipette: boolean;
+  /** Gewählter Bodenbelag des Boden-Werkzeugs, 'none' fürs Entfernen, null: Werkzeug nicht aktiv. */
+  floorStyle: string | null;
+  /** Gewählte Höhe des Podest-Werkzeugs, null: Werkzeug nicht aktiv. */
+  level?: number | null;
+  /** Kamera in Vierteldrehungen. */
+  camera: number;
+}
+
+/** Ansicht, Pipette und Boden: die Werkzeuge über dem Katalog. */
+function toolSection(wallMode: string, paintColor: string | null, tools: BuildTools): Safe {
+  const modes: { id: string; title: string }[] = [{ id: 'up', title: 'Hoch' }, { id: 'cut', title: 'Schnitt' }, { id: 'down', title: 'Unten' }];
+  return html`<section class="detail build-tools" data-key="tools">
+    <div class="tool-row"><span>Kamera</span>
+      <button class="btn btn-small" data-action="camera" data-id="-1" title="Taste ," aria-label="Nach links drehen">↺</button>
+      <button class="btn btn-small" data-action="camera" data-id="1" title="Taste ." aria-label="Nach rechts drehen">↻</button>
+      ${tools.camera ? html`<span class="hint">Stadt nur in der Grundansicht</span>` : null}
+    </div>
+    <div class="tool-row"><span>Wände</span>
+      ${modes.map((m) => html`<button class="toggle ${wallMode === m.id ? 'on' : ''}" data-action="wall-mode" data-id="${m.id}" title="Taste V">${m.title}</button>`)}
+    </div>
+    <div class="tool-row"><span>Pipette</span>
+      <button class="toggle ${tools.pipette ? 'on' : ''}" data-action="pipette" title="Taste E">Aufnehmen</button>
+    </div>
+    ${tools.pipette ? html`<p class="hint">Klicke ein Möbelstück, eine Wand oder einen Boden an. <kbd>Esc</kbd> beendet das.</p>` : null}
+    <div class="paint-row" data-key="paint"><span>Wände streichen</span>
+      ${WALL_COLORS.map((c) => html`<button class="paint-swatch ${paintColor === c.id ? 'selected' : ''}" data-action="paint-pick" data-id="${c.id}" title="${c.title}" aria-label="${c.title}" style="background:${c.hex}"></button>`)}
+      ${paintColor ? html`<button class="btn btn-small" data-action="paint-stop">Fertig</button>` : null}
+    </div>
+    ${paintColor ? html`<p class="hint">Klick streicht die sichtbare Wandseite, <kbd>Umschalt</kbd>+Klick alle Wände des Raums. <kbd>Esc</kbd> beendet das.</p>` : null}
+    <div class="paint-row" data-key="floor"><span>Boden verlegen</span>
+      ${FLOOR_STYLES.map((f) => html`<button class="paint-swatch ${tools.floorStyle === f.style ? 'selected' : ''}" data-action="floor-pick" data-id="${f.style}" title="${f.title}" aria-label="${f.title}" style="background:${FLOOR_SWATCH[f.style]}"></button>`)}
+      <button class="btn btn-small ${tools.floorStyle === 'none' ? 'selected' : ''}" data-action="floor-pick" data-id="none">Entfernen</button>
+    </div>
+    <div class="tool-row" data-key="level"><span>Podest</span>
+      ${[0, 1, 2, 3].map((n) => html`<button class="toggle ${tools.level === n ? 'on' : ''}" data-action="level-pick" data-id="${n}" title="${n ? `${n} Stufen hoch` : 'Zurück auf den Boden'}">${n ? `+${n}` : 'Boden'}</button>`)}
+    </div>
+    ${tools.floorStyle || tools.level != null ? html`<p class="hint">Mit gedrückter Maus ein Rechteck ziehen. <kbd>Umschalt</kbd>+Klick füllt den ganzen Raum. <kbd>Esc</kbd> beendet das.</p>` : null}
+    ${tools.level ? html`<p class="hint">Zwischen zwei Ebenen führen Stufen hinauf. Geländer sichern die Kante.</p>` : null}
+  </section>`;
+}
+
+export function buildPanel(s: Snapshot, buildKind: string | null, moving: boolean, message: string, anchored: boolean, inventoryId: string | null = null, confirmDelete: string | null = null, atHead = true, room: RoomNaming | null = null, wallMode = 'up', paintColor: string | null = null, tools: BuildTools = { pipette: false, floorStyle: null, camera: 0 }): Safe {
   const fromInventory = Boolean(inventoryId);
   const deletable = moving || fromInventory;
   const { company } = s;
   const zone = buildKind === 'department';
-  const info = buildKind && !zone && buildKind !== 'roomwalls' ? furnitureByKind(buildKind as never) : null;
+  const info = buildKind && !zone && buildKind !== 'roomwalls' && buildKind !== 'floor' && buildKind !== 'level' ? furnitureByKind(buildKind as never) : null;
   const shaft = info ? isShaft(info.kind) : false;
-  const rotates = info ? !(shaft && moving) : false;
+  const hung = info ? ['picture', 'wallLamp', 'wallShelf', 'clock'].includes(info.kind) : false;
+  const edge = info ? ['wall', 'half', 'fence', 'window', 'glass'].includes(info.kind) && !moving : false;
+  const rotates = info ? !(shaft && moving) && !hung && !edge && info.kind !== 'door' : false;
   return html`
     <div class="panel-head"><h2>Büro ausbauen</h2></div>
+    ${toolSection(wallMode, paintColor, tools)}
+    ${(buildKind === 'floor' || buildKind === 'level') && message ? html`<p class="form-error">${message}</p>` : null}
     ${buildKind === 'roomwalls' ? html`
       <section class="detail">
         <h3>Raum aufziehen</h3>
-        <p class="hint">${anchored ? 'Klicke jetzt die gegenüberliegende Ecke. Wände entstehen rundherum.' : 'Klicke die erste Ecke des Raums im Büro.'} Eine Tür setzt du danach selbst.</p>
+        <p class="hint">${anchored ? 'Klicke jetzt die gegenüberliegende Ecke. Wände entstehen rundherum.' : 'Ziehe mit gedrückter Maus von Ecke zu Ecke, oder klicke beide Ecken.'} Eine Tür setzt du danach selbst.</p>
         ${message ? html`<p class="form-error">${message}</p>` : null}
         <p class="hint"><kbd>Esc</kbd> abbrechen · <kbd>Strg</kbd>+<kbd>Z</kbd> rückgängig</p>
       </section>` : null}
@@ -2334,11 +2503,12 @@ export function buildPanel(s: Snapshot, buildKind: string | null, moving: boolea
     ${info ? html`
       <section class="detail">
         <h3>${moving ? `${info.title} umstellen` : info.title}</h3>
-        <p class="hint">${shaft && moving ? `Steht auf jeder Etage und bleibt an seinem Platz. Entfernen geht, solange ein zweiter Aufgang steht.` : shaft ? `${info.size}, auf jeder Etage an derselben Stelle. Das gelbe Feld davor bleibt frei. Fahre mit der Maus auf ein Feld im Büro.` : `${info.size}. ${moving ? '' : fromInventory ? 'Aus dem Inventar. ' : ''}Fahre mit der Maus auf ein Feld im Büro.${rotates ? '' : ' Dieser Gegenstand lässt sich nicht drehen.'}`}${info.kind === 'meeting' ? ' Beim Besprechungsraum legt das fest, wo die Tür sitzt.' : ''}</p>
+        <p class="hint">${edge ? `Mit gedrückter Maus ziehen. Klick auf ein stehendes Stück reißt es ab, mit gedrückter Alt- oder Cmd-Taste ein ganzer Zug.` : hung ? `Fahre mit der Maus auf eine Wand. Es hängt an der Seite, die du siehst. Fällt die Wand, kommt es ins Inventar.` : shaft && moving ? `Steht auf jeder Etage und bleibt an seinem Platz. Entfernen geht, solange ein zweiter Aufgang steht.` : shaft ?`${info.size}, auf jeder Etage an derselben Stelle. Das gelbe Feld davor bleibt frei. Fahre mit der Maus auf ein Feld im Büro.` : `${info.size}. ${moving ? '' : fromInventory ? 'Aus dem Inventar. ' : ''}Fahre mit der Maus auf ein Feld im Büro.${rotates ? '' : ' Dieser Gegenstand lässt sich nicht drehen.'}`}${info.kind === 'meeting' ? ' Beim Besprechungsraum legt das fest, wo die Tür sitzt.' : ''}</p>
         ${message ? html`<p class="form-error">${message}</p>` : null}
         ${confirmDelete && deletable ? html`<p class="form-error" role="alert">Wirklich löschen? Noch einmal <kbd>Entf</kbd> drückt es endgültig weg, ohne Erstattung.</p>` : null}
         <ul class="key-legend">
           ${shaft && moving ? null : html`<li><kbd>Klick</kbd> oder <kbd>Enter</kbd> abstellen</li>`}
+          ${!moving && !fromInventory && !edge ? html`<li><kbd>Umschalt</kbd>+Klick: Werkzeug bleibt</li>` : null}
           ${rotates ? html`<li><kbd>R</kbd> ${shaft ? 'Seite wählen' : 'drehen'}</li>` : null}
           ${moving && !shaft ? html`<li><kbd>I</kbd> ins Inventar</li>` : null}
           ${deletable ? html`<li><kbd>Entf</kbd> löschen</li>` : null}
@@ -2371,7 +2541,7 @@ export function buildPanel(s: Snapshot, buildKind: string | null, moving: boolea
           </button></li>`)}
       </ul>`;
     })}
-    ${roomSection(s, room, wallsLow, paintColor)}
+    ${roomSection(s, room)}
     ${atHead ? buildingSection(s) : html`<p class="hint" data-key="anbau-hinweis">Anbauen geht vorerst nur am Firmensitz.</p>`}
     ${company.departments.length ? html`<section class="detail" data-key="zones">
       <h3>Abteilungen</h3>
@@ -2386,7 +2556,7 @@ export function buildPanel(s: Snapshot, buildKind: string | null, moving: boolea
 }
 
 /** Räume aus Wänden und Türen bekommen hier Zweck und Namen. */
-function roomSection(s: Snapshot, room: RoomNaming | null, wallsLow = false, paintColor: string | null = null): Safe {
+function roomSection(s: Snapshot, room: RoomNaming | null): Safe {
   const zones = s.company.zones ?? [];
   const title = (kind: string) => ZONE_KINDS.find((z) => z.kind === kind)?.title ?? kind;
   const form = room?.target
@@ -2404,12 +2574,6 @@ function roomSection(s: Snapshot, room: RoomNaming | null, wallsLow = false, pai
       : html`<button class="btn btn-small" data-action="room-mode">Raum benennen</button>`;
   return html`<section class="detail" data-key="rooms">
     <h3>Räume</h3>
-    <button class="btn btn-small" data-action="toggle-walls">${wallsLow ? 'Wände hochschalten' : 'Wände herunterschalten'}</button>
-    <div class="paint-row" data-key="paint"><span>Wände streichen</span>
-      ${WALL_COLORS.map((c) => html`<button class="paint-swatch ${paintColor === c.id ? 'selected' : ''}" data-action="paint-pick" data-id="${c.id}" title="${c.title}" aria-label="${c.title}" style="background:${c.hex}"></button>`)}
-      ${paintColor ? html`<button class="btn btn-small" data-action="paint-stop">Fertig</button>` : null}
-    </div>
-    ${paintColor ? html`<p class="hint">Klicke Wände an, um sie zu streichen. <kbd>Esc</kbd> beendet das.</p>` : null}
     ${form}
     ${zones.length ? html`<ul class="dept-list">${zones.map((z) => html`<li data-key="${z.id}">
       <span><span class="dept-dot" style="background:${ZONE_COLORS[z.kind]}"></span> ${z.name}, ${title(z.kind)}${floorOf(z) ? `, ${floorName(floorOf(z))}` : ''}</span>

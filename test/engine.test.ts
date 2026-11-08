@@ -1917,6 +1917,39 @@ test('Teamaufgabe: Die Leitung verteilt nur im Team, ein Vertrag bringt die neue
   assert.equal(team.leadId, null);
 });
 
+test('Teamrollen: Manager, Rollen und Besetzung, die Leitung plant danach', async () => {
+  const company = newCompany();
+  company.buildPoints = 500;
+  engine.placeItem(company.id, { kind: 'desk', i: 5, j: 3, rot: 0 });
+  engine.placeItem(company.id, { kind: 'desk', i: 6, j: 1, rot: 0 });
+  const redaktion = engine.createRole(company.id, { title: 'Redaktion', task: 'Du schreibst.', baseRoleId: 'text', skillIds: ['text'] });
+  const lead = await hired(company.id, 'Mila');
+  const writer = await hired(company.id, 'Sam');
+  const tester = await hired(company.id, 'Robin');
+
+  assert.throws(() => engine.createTeam(company.id, { name: 'X', leadId: lead.id, memberIds: [lead.id], roles: [{ title: '' }] }), /Titel/);
+  assert.throws(() => engine.createTeam(company.id, { name: 'X', leadId: lead.id, memberIds: [lead.id], roles: [{ title: 'Test' }, { title: 'test' }] }), /schon im Team/);
+  assert.throws(() => engine.createTeam(company.id, { name: 'X', leadId: lead.id, memberIds: [lead.id], roles: [{ title: 'Test', memberIds: ['niemand'] }] }), /gibt es nicht/);
+  const team = engine.createTeam(company.id, {
+    name: 'Produkt', leadId: lead.id, memberIds: [lead.id],
+    roles: [{ companyRoleId: redaktion.id, memberIds: [writer.id] }, { title: 'Test', memberIds: [tester.id] }, { title: 'Design' }],
+  });
+  assert.deepEqual(team.roles!.map((r) => r.title), ['Redaktion', 'Test', 'Design'], 'Der Titel kommt aus der Rolle der Firma');
+  assert.equal(team.roles![0].companyRoleId, redaktion.id);
+  assert.deepEqual([...team.memberIds].sort(), [lead.id, writer.id, tester.id].sort(), 'Wer eine Rolle hat, gehört zum Team');
+
+  const task = await engine.startMandate(company.id, { goal: 'Text', budgetEur: 1, teamId: team.id });
+  const prompt = company.runs.at(-1)!.prompt;
+  assert.match(prompt, /Rollen im Team[\s\S]*- Redaktion: Sam[\s\S]*- Test: Robin[\s\S]*- Design: noch unbesetzt/);
+  await until(() => task.status === 'active', 'Planung');
+  engine.closeMandate(company.id, task.id);
+
+  // Wer das Team verlässt, verliert auch seine Rolle. Die Rolle selbst bleibt.
+  engine.updateTeam(company.id, team.id, { memberIds: [lead.id, writer.id] });
+  assert.deepEqual(team.roles!.find((r) => r.title === 'Test')!.memberIds, []);
+  assert.equal(team.roles!.length, 3);
+});
+
 test('Vertrag: Der Manager kann eine definierte Rolle vorschlagen, die Person kommt ins Team', async () => {
   const company = newCompany();
   company.buildPoints = 500;

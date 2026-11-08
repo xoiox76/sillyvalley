@@ -44,6 +44,31 @@ export function fillPoly(ctx: Ctx, pts: readonly Point[], color: string): void {
   }
 }
 
+/** Wie fillPoly, aber jedes Pixel bekommt seine eigene Farbe. Für Maserung, Stoff und Schattierung. */
+export function fillPolyFn(ctx: Ctx, pts: readonly Point[], color: (x: number, y: number) => string | null): void {
+  const ys = pts.map((p) => p[1]);
+  const minY = Math.floor(Math.min(...ys));
+  const maxY = Math.ceil(Math.max(...ys));
+  for (let y = minY; y < maxY; y++) {
+    const scan = y + 0.5;
+    const xs: number[] = [];
+    for (let a = 0; a < pts.length; a++) {
+      const [x0, y0] = pts[a];
+      const [x1, y1] = pts[(a + 1) % pts.length];
+      if ((y0 <= scan && y1 > scan) || (y1 <= scan && y0 > scan)) xs.push(x0 + ((scan - y0) / (y1 - y0)) * (x1 - x0));
+    }
+    xs.sort((p, q) => p - q);
+    for (let k = 0; k + 1 < xs.length; k += 2) {
+      for (let x = Math.round(xs[k]); x < Math.round(xs[k + 1]); x++) {
+        const c = color(x, y);
+        if (!c) continue;
+        ctx.fillStyle = c;
+        ctx.fillRect(x, y, 1, 1);
+      }
+    }
+  }
+}
+
 export function line(ctx: Ctx, x0: number, y0: number, x1: number, y1: number, color: string): void {
   ctx.fillStyle = color;
   let [x, y] = [Math.round(x0), Math.round(y0)];
@@ -89,6 +114,11 @@ export interface Faces {
   left: string;
   right: string;
 }
+
+/** Fünf Stufen einer Farbe, von dunkel nach hell. Stufe 2 ist die Farbe selbst. */
+export type Ramp = readonly [string, string, string, string, string];
+export const rampOf = (c: string, spread = 0.22): Ramp => [darken(c, spread * 2), darken(c, spread), c, lighten(c, spread * 0.7), lighten(c, spread * 1.5)];
+export const step = (r: Ramp, t: number) => r[Math.max(0, Math.min(4, Math.round(t)))];
 
 /** Drei Seiten einer Farbe: oben hell, links die Farbe selbst, rechts im Schatten. */
 export const tri = (c: string, spread = 0.2): Faces => ({ top: lighten(c, spread), left: c, right: darken(c, spread) });
@@ -140,15 +170,24 @@ export class Pen {
   readonly ctx: Ctx;
   readonly ox: number;
   readonly oy: number;
+  /** Auflösung: Pixel pro altem Pixel. Höhen und Flächenmaße bleiben in alten Pixeln, gezeichnet wird res-fach feiner. */
+  readonly res: number;
 
-  constructor(ctx: Ctx, ox: number, oy: number) {
+  constructor(ctx: Ctx, ox: number, oy: number, res = 1) {
     this.ctx = ctx;
     this.ox = ox;
     this.oy = oy;
+    this.res = res;
   }
 
   pt(i: number, j: number, z = 0): [number, number] {
-    return [Math.round(this.ox + (i - j) * 16), Math.round(this.oy + (i + j) * 8 - z)];
+    const r = this.res;
+    return [Math.round(this.ox + (i - j) * 16 * r), Math.round(this.oy + (i + j) * 8 * r - z * r)];
+  }
+
+  /** Dieselbe Stelle, um z alte Pixel angehoben. */
+  lifted(z: number): Pen {
+    return z ? new Pen(this.ctx, this.ox, this.oy - z * this.res, this.res) : this;
   }
 
   box(i: number, j: number, z: number, w: number, d: number, h: number, c: Faces): void {
@@ -163,18 +202,100 @@ export class Pen {
     line(this.ctx, bx, by, cx, cy, lighten(c.top, 0.1));
   }
 
-  /** Fläche auf einer Wand, die nach vorn links zeigt und entlang i läuft. u, v in Pixel ab (i, j, z). */
+  /** Fläche auf einer Wand, die nach vorn links zeigt und entlang i läuft. u, v in alten Pixeln ab (i, j, z). */
   faceJ(i: number, j: number, z: number, u: number, v: number, w: number, h: number, color: string): void {
+    const r = this.res;
     const [bx, by] = this.pt(i, j, z);
     this.ctx.fillStyle = color;
-    for (let c = 0; c < w; c++) this.ctx.fillRect(bx + u + c, by + Math.floor((u + c) / 2) - v - h, 1, h);
+    for (let c = 0; c < w * r; c++) this.ctx.fillRect(bx + u * r + c, by + Math.floor((u * r + c) / 2) - v * r - h * r, 1, h * r);
   }
 
   /** Fläche auf einer Wand, die nach vorn rechts zeigt und entlang j läuft. */
   faceI(i: number, j: number, z: number, u: number, v: number, w: number, h: number, color: string): void {
+    const r = this.res;
     const [bx, by] = this.pt(i, j, z);
     this.ctx.fillStyle = color;
-    for (let c = 0; c < w; c++) this.ctx.fillRect(bx - u - c - 1, by + Math.floor((u + c) / 2) - v - h, 1, h);
+    for (let c = 0; c < w * r; c++) this.ctx.fillRect(bx - u * r - c - 1, by + Math.floor((u * r + c) / 2) - v * r - h * r, 1, h * r);
+  }
+
+  /**
+   * Quader mit Farbstufen: oben hell, links mittel, rechts dunkel, helle Kante zum Licht.
+   * tex darf je Bildpixel eine eigene Farbe liefern. u, v sind feine Pixel auf der Fläche, ab ihrer linken unteren Ecke.
+   */
+  tbox(i: number, j: number, z: number, w: number, d: number, h: number, r: Ramp, tex?: (face: 'top' | 'left' | 'right', u: number, v: number, x: number, y: number) => string | null): void {
+    const P = (a: number, b: number, k: number) => this.pt(a, b, k);
+    const t = z + h;
+    const L = [P(i, j + d, z), P(i + w, j + d, z), P(i + w, j + d, t), P(i, j + d, t)] as const;
+    const R = [P(i + w, j, z), P(i + w, j + d, z), P(i + w, j + d, t), P(i + w, j, t)] as const;
+    const T = [P(i, j, t), P(i + w, j, t), P(i + w, j + d, t), P(i, j + d, t)] as const;
+    const [lx, ly] = L[0];
+    const [rx, ry] = R[1];
+    const [tx, ty] = T[0];
+    if (h > 0) {
+      fillPolyFn(this.ctx, L, (x, y) => {
+        const u = x - lx;
+        const v = ly + Math.floor(u / 2) - y;
+        return (tex && tex('left', u, v, x, y)) ?? r[2];
+      });
+      fillPolyFn(this.ctx, R, (x, y) => {
+        const u = rx - x - 1;
+        const v = ry + Math.floor(u / 2) - y;
+        return (tex && tex('right', u, v, x, y)) ?? r[1];
+      });
+    }
+    fillPolyFn(this.ctx, T, (x, y) => {
+      // Auf der Oberseite: u längs i, v längs j, in feinen Pixeln.
+      const dx = x + 0.5 - tx;
+      const dy = y + 0.5 - ty;
+      const u = (dx / 16 + dy / 8) * 8;
+      const v = (dy / 8 - dx / 16) * 8;
+      return (tex && tex('top', u, v, x, y)) ?? r[3];
+    });
+    line(this.ctx, ...T[3], ...T[2], r[4]);
+    line(this.ctx, ...T[2], ...T[1], r[4]);
+    if (h > 0) line(this.ctx, ...L[1], ...L[2], r[3]);
+  }
+
+  /** Senkrechter Zylinder, quer schattiert. gloss: Metall mit Glanzstreifen. */
+  cylinder(i: number, j: number, z: number, rad: number, h: number, r: Ramp, gloss = false): void {
+    const [cx, cyb] = this.pt(i, j, z);
+    const [, cyt] = this.pt(i, j, z + h);
+    const rx = rad * 22.6 * this.res;
+    const ry = rad * 11.3 * this.res;
+    for (let x = Math.floor(-rx); x <= Math.ceil(rx); x++) {
+      const t = (x + rx) / (2 * rx);
+      const yy = ry * Math.sqrt(Math.max(0, 1 - (x / rx) ** 2));
+      const tone = gloss ? (t > 0.22 && t < 0.34 ? 4 : 3 - Math.round(t * 2.4)) : Math.round(3.2 - t * 2.8);
+      this.ctx.fillStyle = step(r, tone);
+      this.ctx.fillRect(cx + x, Math.round(cyt), 1, Math.round(cyb + yy) - Math.round(cyt) + 1);
+    }
+    this.ctx.fillStyle = r[3];
+    for (let x = Math.floor(-rx); x <= Math.ceil(rx); x++) {
+      const yy = ry * Math.sqrt(Math.max(0, 1 - (x / rx) ** 2));
+      this.ctx.fillRect(cx + x, Math.round(cyt - yy), 1, Math.max(1, Math.round(2 * yy)));
+    }
+  }
+
+  /** Kugel mit Glanzpunkt oben links. rad in Feldern. */
+  sphere(i: number, j: number, z: number, rad: number, r: Ramp): void {
+    const [cx, cy] = this.pt(i, j, z);
+    const R = rad * 20 * this.res;
+    for (let y = Math.floor(-R); y <= R; y++) {
+      for (let x = Math.floor(-R); x <= R; x++) {
+        const q = (x * x + y * y) / (R * R);
+        if (q > 1) continue;
+        const lit = 1 - Math.hypot((x + R * 0.4) / R, (y + R * 0.45) / R) * 0.75;
+        this.ctx.fillStyle = q > 0.8 ? r[0] : step(r, lit * 4);
+        this.ctx.fillRect(cx + x, cy + y, 1, 1);
+      }
+    }
+  }
+
+  /** Stab zwischen zwei Punkten (i, j, z), thick feine Pixel dick, oben heller. */
+  rod(a: readonly [number, number, number], b: readonly [number, number, number], thick: number, r: Ramp): void {
+    const [ax, ay] = this.pt(...a);
+    const [bx, by] = this.pt(...b);
+    for (let k = 0; k < thick; k++) line(this.ctx, ax, ay - k, bx, by - k, k === thick - 1 ? r[4] : k === 0 ? r[1] : r[2]);
   }
 
   floorPoly(i: number, j: number, w: number, d: number, color: string): void {

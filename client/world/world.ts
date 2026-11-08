@@ -4,27 +4,36 @@
 import { DEFAULT_CEO, LOCATIONS, isProp, locationById, staffOf, wallColor } from '../../shared/catalog.ts';
 import { withoutEszett, show } from '../ui/html.ts';
 import { noteEdge, noteLook } from '../../shared/board.ts';
-import { quotaClosedUntil } from '../../shared/quota.ts';
+import { darkness, quotaUsed } from '../../shared/quota.ts';
 import { drawTownBehind, drawTownInFront } from './town.ts';
 import { siteAt, siteBase, storeyOf, buildingAt, checkShaft, floorOf, isShaft, itemsOnFloor, roomOf, shaftLanding } from '../../shared/building.ts';
 import { noteTaker, wallNotes, type BoardNote } from '../../shared/board.ts';
 import {
   MEETING_SIZE, blockedEdges, blockedSet, checkDepartment, checkPlacement, findPath, footprint, inBounds, meetingDoor, occupiedTiles, seatOf, standingTile,
   type Rect, type Seat, type Tile,
-  wallSides, isEdgeKind, onBackWall, rectWalls,
+  wallSides, isEdgeKind, isWallHung, isLowEdge, onBackWall, rectWalls, heightEdges, type Heights, FLAT, MAX_LEVEL,
 } from '../../shared/layout.ts';
-import { LOUNGE_SPOTS, ZONE_COLORS, roomSeats, zoneTiles } from '../../shared/zones.ts';
+import { LOUNGE_SPOTS, ZONE_COLORS, floorStyleAt, heightsOf, paintedTiles, roomSeats, zoneTiles } from '../../shared/zones.ts';
+import { ViewXf, dirOfView, viewOfDir, type Cam } from './camera.ts';
 import type { Agent, Company, Department, FloorStyle, FurnitureKind, HelpRequest, PropKind, LiveKind, Meeting, PlacedItem, PlanStatus, Rotation, Shaft, ZoneKind } from '../../shared/types.ts';
-import { arcadeSprite, beanbagSprite, edgeSprite, boardSprite, stairSprite, type StairMode, ROOM_HEIGHT, drawLiftDoors, drawLiftFrame, liftShell, type LiftFace, chairBack, chairBase, ceoTable, deskTable, drawScreen, furnitureSprite, glassSegment, meetingFloor, meetingTable, propSprite, type Sprite } from './art.ts';
-import { characterSprite, type Pose, type View } from './characters.ts';
-import { Pen, fillPoly, layer, line, rect, type Ctx, type Layer } from './pixel.ts';
+import { cutEdgeSprite, RES, LEVEL_PX, platformSprite, stepsSprite, columnSprite, hungSprite, lowEdgeSprite, arcadeSprite, beanbagSprite, edgeSprite, boardSprite, stairSprite, type StairMode, ROOM_HEIGHT, drawLiftDoors, drawLiftFrame, liftShell, type LiftFace, chairBack, chairBase, ceoTable, deskTable, drawScreen, furnitureSprite, glassSegment, meetingFloor, meetingTable, propSprite, type Sprite } from './art.ts';
+import { type Pose, type View } from './characters.ts';
+import { figureSprite } from './figures.ts';
+import * as commute from './commute.ts';
+import { Pen, darken, fillPoly, layer, line, mix, rect, type Ctx, type Layer } from './pixel.ts';
 import { buildRoom, waterPattern, type Room, WALL_H } from './room.ts';
 
 const MOBILE_STATES: LiveKind[] = ['idle', 'done', 'stopped', 'handoff', 'meeting'];
 const WORKING: LiveKind[] = ['starting', 'thinking', 'answering', 'reading', 'writing', 'searching', 'waiting'];
 const WALK_SPEED = 2.4;
 /** Sichtbare Höhe in Pixeln, damit ein Klick auf den oberen Teil das Möbelstück trifft. */
-const ITEM_HEIGHT: Record<FurnitureKind, number> = { board: 40, window: 50, glass: 50, arcade: 42, beanbag: 15, wall: 50, door: 50, table: 24, desk: 30, shelf: 42, coffee: 28, plant: 22, meeting: 36, ceoDesk: 30, stairs: 40, lift: 46, bed: 24, toybox: 18, 'desk-kid': 26, workbench: 28, boxes: 26, tires: 16, lockers: 42, sofa: 22 };
+const ITEM_HEIGHT: Record<FurnitureKind, number> = { board: 40, window: 50, glass: 50, arcade: 42, beanbag: 15, wall: 50, door: 50, table: 24, desk: 30, shelf: 42, coffee: 28, plant: 22, meeting: 36, ceoDesk: 30, stairs: 40, lift: 46, bed: 24, toybox: 18, 'desk-kid': 26, workbench: 28, boxes: 26, tires: 16, lockers: 42, sofa: 22, half: 18, fence: 16, steps: 8, column: 50, picture: 0, wallLamp: 0, wallShelf: 0, clock: 0 };
+
+/** Oberseite eines Podests ohne eigenen Belag. */
+const PLATFORM_TOP = '#b9b2a6';
+
+/** Wie die Wände stehen: ganz hoch, vor dem Raum unter der Maus aufgeschnitten, oder alle unten. */
+export type WallMode = 'up' | 'cut' | 'down';
 
 const CEO_KEYS: Record<string, Tile> = {
   ArrowUp: { i: 0, j: -1 }, w: { i: 0, j: -1 }, W: { i: 0, j: -1 },
@@ -36,6 +45,13 @@ const CEO_KEYS: Record<string, Tile> = {
 const MAX_DEVICE_SCALE = 16;
 const WHEEL_STEP = 40;
 const REDUCED_MOTION = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+/** Zum Ausprobieren der Tageszeit: ?nutzung=0.8 in der Adresse gibt den Verbrauch vor. */
+const USAGE_OVERRIDE = (() => {
+  const raw = new URLSearchParams(window.location.search).get('nutzung');
+  const n = raw === null ? NaN : Number(raw);
+  return Number.isFinite(n) ? Math.max(0, Math.min(1, n)) : null;
+})();
+commute.setUsage({ override: USAGE_OVERRIDE });
 
 export interface WallEdge {
   i: number;
@@ -44,13 +60,15 @@ export interface WallEdge {
 }
 
 export type Ghost =
-  | { kind: FurnitureKind; id?: string; i: number; j: number; rot: Rotation; run?: WallEdge[] }
+  | { kind: FurnitureKind; id?: string; i: number; j: number; rot: Rotation; run?: WallEdge[]; removing?: boolean }
   /** Ein Abteilungsbereich beim Abstecken. */
   | { kind: 'zone'; id?: string; i: number; j: number; w: number; d: number }
   /** Das Raum-Werkzeug: vier Wände rund um ein Rechteck. */
   | { kind: 'roomwalls'; id?: undefined; i: number; j: number; w: number; d: number }
   /** Ein Raum aus Wänden, der benannt werden soll. tiles: die Felder als "i,j". ok: ob er ein eigener Raum ist. */
-  | { kind: 'room'; id?: undefined; i: number; j: number; tiles: string[]; ok: boolean };
+  | { kind: 'room'; id?: undefined; i: number; j: number; tiles: string[]; ok: boolean }
+  /** Bodenbelag verlegen. tiles als "i,j", style null: Belag entfernen. */
+  | { kind: 'floor'; id?: undefined; i: number; j: number; tiles: string[]; style: FloorStyle | null };
 
 /** Was eine freie Figur gerade zum Zeitvertreib tut. Nur Kulisse, nie ein Agentenzustand. */
 type Pause =
@@ -156,6 +174,17 @@ function bubbleFor(kind: LiveKind): Bubble | null {
 }
 
 
+/** Figuren sind in feinen Pixeln gezeichnet. Sie werden 1 : 1 gesetzt und bei Bedarf gespiegelt. */
+function drawFigure(ctx: Ctx, sprite: { canvas: HTMLCanvasElement; ax: number; ay: number }, sx: number, sy: number, flip: boolean): void {
+  ctx.save();
+  if (flip) {
+    ctx.translate(sx * 2, 0);
+    ctx.scale(-1, 1);
+  }
+  ctx.drawImage(sprite.canvas, sx - sprite.ax, sy - sprite.ay);
+  ctx.restore();
+}
+
 const isSeated = (actor: Actor) => (actor.goal.startsWith('seat:') || actor.goal.startsWith('tagung:')) && !actor.path.length && actor.pose !== 'walk';
 
 export interface WorldCallbacks {
@@ -181,6 +210,13 @@ export interface WorldCallbacks {
   onLaptop(): void;
   /** Rechtsklick: dreht die Vorschau oder ein stehendes Möbelstück. */
   onRotate(item: PlacedItem | null): void;
+  /** Ob gedrücktes Ziehen gerade baut statt die Ansicht zu verschieben. */
+  dragBuild?(): boolean;
+  /** Maustaste gedrückt und losgelassen beim Bauen. Dazwischen meldet die Welt die Maus wie sonst. */
+  onPress?(tile: Tile | null, edge: WallEdge | null): void;
+  onRelease?(tile: Tile | null, edge: WallEdge | null): void;
+  /** Klick auf ein freies Feld ohne Bauvorschau. Für die Pipette. */
+  onFloorClick?(tile: Tile): void;
 }
 
 export class World {
@@ -218,6 +254,15 @@ export class World {
   private wheelSum = 0;
   private drag: { x: number; y: number; moved: boolean } | null = null;
   private dragged = false;
+  /** Beim Bauen gedrückt gehalten: Ziehen baut, statt die Ansicht zu verschieben. */
+  private pressing = false;
+  /** Von welcher Seite die Kamera auf das Haus schaut, in Vierteldrehungen. */
+  private cam: Cam = 0;
+  /** Standard ist der Schnitt: Innenwände durchscheinend, die hinteren Außenwände oben. */
+  private wallMode: WallMode = 'cut';
+  /** Das Feld unter der Maus, in Weltkoordinaten. Der Schnitt durch die Wände richtet sich danach. */
+  private hoverTile: Tile | null = null;
+
   private ghost: Ghost | null = null;
   private selected: string | null = null;
   private raf = 0;
@@ -249,8 +294,13 @@ export class World {
     new ResizeObserver(() => this.resize()).observe(container);
     this.canvas.addEventListener('wheel', (e) => this.onWheel(e), { passive: false });
     this.onCeoKeyDown = (e) => {
-      const step = CEO_KEYS[e.key];
-      if (!step || !this.active || this.callbacks.keyboardBlocked()) return;
+      const pressed = CEO_KEYS[e.key];
+      if (!pressed || !this.active || this.callbacks.keyboardBlocked()) return;
+      // Die Pfeile gelten für den Bildschirm. Bei gedrehter Kamera zeigen sie in andere Weltrichtungen.
+      const xf = this.xf();
+      const [i0, j0] = xf.back(0, 0);
+      const [i1, j1] = xf.back(pressed.i, pressed.j);
+      const step = { i: i1 - i0, j: j1 - j0 };
       e.preventDefault();
       if (e.repeat) return;
       this.ceo.key = step;
@@ -263,9 +313,25 @@ export class World {
     window.addEventListener('keydown', this.onCeoKeyDown);
     window.addEventListener('keyup', this.onCeoKeyUp);
     this.canvas.addEventListener('pointerdown', (e) => {
-      if (e.button === 0) this.drag = { x: e.clientX, y: e.clientY, moved: false };
+      if (e.button !== 0) return;
+      if (this.ghost && this.callbacks.dragBuild?.()) {
+        const { x, y } = this.low(e);
+        this.pressing = true;
+        this.canvas.setPointerCapture?.(e.pointerId);
+        this.callbacks.onPress?.(this.tileAt(x, y), this.edgeAt(x, y));
+        return;
+      }
+      this.drag = { x: e.clientX, y: e.clientY, moved: false };
     });
-    this.canvas.addEventListener('pointerup', () => {
+    this.canvas.addEventListener('pointerup', (e) => {
+      if (this.pressing) {
+        this.pressing = false;
+        const { x, y } = this.low(e);
+        // Der Klick danach gehört schon zum Loslassen.
+        this.dragged = true;
+        this.callbacks.onRelease?.(this.tileAt(x, y), this.edgeAt(x, y));
+        return;
+      }
       this.dragged = Boolean(this.drag?.moved);
       this.drag = null;
     });
@@ -301,7 +367,66 @@ export class World {
   private wallsLow = false;
 
   setWallsLow(low: boolean): void {
-    this.wallsLow = low;
+    this.setWallMode(low ? 'down' : 'up');
+  }
+
+  setWallMode(mode: WallMode): void {
+    const outerChanged = (mode === 'down') !== (this.wallMode === 'down');
+    this.wallMode = mode;
+    this.wallsLow = mode === 'down';
+    // Unten senkt auch die Außenwände des Hauses. Die stecken im vorgezeichneten Raum.
+    if (outerChanged && this.company) this.useRoom();
+  }
+
+  /** Dreht die Kamera um Vierteldrehungen. Die Stadt rundherum zeigt nur die Grundansicht. */
+  rotateCamera(step: number): void {
+    this.cam = ((((this.cam + step) % 4) + 4) % 4) as Cam;
+    this.panX = 0;
+    this.panY = 0;
+    if (this.company) this.useRoom();
+    this.resize();
+  }
+
+  get camera(): Cam {
+    return this.cam;
+  }
+
+  /** Die Umrechnung zwischen Welt und Bild für die sichtbare Etage. */
+  private xf(): ViewXf {
+    const loc = this.company ? roomOf(this.company, this.viewFloor) : { w: 1, d: 1 };
+    return new ViewXf(this.cam, loc.w, loc.d);
+  }
+
+  /** Höhen der sichtbaren Etage. */
+  private height(): Heights {
+    return this.company ? heightsOf(this.company, this.viewFloor) : FLAT;
+  }
+
+  /** Wie hoch ein Gegenstand steht, in Pixeln: auf seinem Feld, Wände auf der tieferen, Geländer auf der höheren Seite. */
+  private itemZ(item: Pick<PlacedItem, 'kind' | 'i' | 'j' | 'rot'>, height = this.height()): number {
+    if (height === FLAT) return 0;
+    if (isEdgeKind(item.kind)) {
+      const [a, b] = wallSides(item);
+      const ha = inBounds(this.location(), a) ? height(a) : 0;
+      const hb = inBounds(this.location(), b) ? height(b) : 0;
+      return (isLowEdge(item.kind) ? Math.max(ha, hb) : Math.min(ha, hb)) * LEVEL_PX;
+    }
+    if (isWallHung(item.kind)) return 0;
+    return height({ i: item.i, j: item.j }) * LEVEL_PX;
+  }
+
+  /** Wie hoch eine Figur an einem Punkt steht. Auf Stufen auf halber Höhe. */
+  private pointZ(i: number, j: number, height = this.height()): number {
+    if (height === FLAT) return 0;
+    const tile = { i: Math.floor(i), j: Math.floor(j) };
+    if (!inBounds(this.location(), tile)) return 0;
+    const onSteps = itemsOnFloor(this.company!.placed, this.viewFloor).some((p) => p.kind === 'steps' && p.i === tile.i && p.j === tile.j);
+    return (height(tile) + (onSteps ? 0.5 : 0)) * LEVEL_PX;
+  }
+
+  /** Welche Seite einer Wand gerade zu sehen ist. Danach richtet sich, welche Seite der Pinsel streicht. */
+  visibleSide(edge: WallEdge): 'front' | 'back' {
+    return this.xf().edgeSide(edge);
   }
 
   setGhost(ghost: Ghost | null): void {
@@ -394,6 +519,13 @@ export class World {
     let left = WALK_SPEED * 1.4 * dt;
     ceo.walking = false;
     while (left > 0 && ceo.path.length) {
+      // Wurde inzwischen etwas in den Weg gebaut, sucht die Figur einen neuen.
+      const here = this.ceoTile();
+      const ahead = ceo.path[0];
+      if ((here.i !== ahead.i || here.j !== ahead.j) && (this.edges.has(`${here.i},${here.j}>${ahead.i},${ahead.j}`) || (this.blocked.has(`${ahead.i},${ahead.j}`) && ceo.path.length > 1))) {
+        ceo.path = findPath(this.location(), this.blocked, here, ceo.path[ceo.path.length - 1], this.edges);
+        if (!ceo.path.length) break;
+      }
       const next = ceo.path[0];
       const dx = next.i + 0.5 - ceo.i;
       const dy = next.j + 0.5 - ceo.j;
@@ -451,7 +583,7 @@ export class World {
     }
     // Beim Zoomen darf die eigene Figur nicht aus dem Bild laufen.
     if (ceo.walking && this.room) {
-      const [x, y] = this.room.pen.pt(ceo.i, ceo.j);
+      const [x, y] = this.room.pen.pt(...this.xf().pt(ceo.i, ceo.j));
       const sx = x + this.offX;
       const sy = y + this.offY;
       const margin = 40;
@@ -468,21 +600,19 @@ export class World {
   private drawCeo(ctx: Ctx, pen: Pen, time: number, items: { depth: number; draw: () => void }[]): void {
     const { ceo } = this;
     const look = this.company!.ceo?.look ?? DEFAULT_CEO.look;
+    const xf = this.xf();
+    const [vi, vj] = xf.pt(ceo.i, ceo.j);
+    const facing = viewOfDir(xf.dir(dirOfView(ceo.view, ceo.flip)));
+    const z = this.pointZ(ceo.i, ceo.j);
     items.push({
-      depth: ceo.i + ceo.j,
+      depth: vi + vj,
       draw: () => {
-        const [sx, sy] = pen.pt(ceo.i, ceo.j);
-        if (!ceo.seated) rect(ctx, sx - 5, sy - 1, 10, 2, 'rgba(10,16,28,.28)');
+        const [sx, sy] = pen.pt(vi, vj, z);
+        if (!ceo.seated) rect(ctx, sx - 5 * RES, sy - RES, 10 * RES, 2 * RES, 'rgba(10,16,28,.28)');
         const frame = ceo.walking ? Math.floor(time / 110) : REDUCED_MOTION ? 0 : Math.floor(time / 520);
         const lift = ceo.seated ? 9 : 0;
-        const sprite = characterSprite(look, ceo.seated ? 'type' : ceo.walking ? 'walk' : 'stand', frame % 24, ceo.view, !ceo.seated);
-        ctx.save();
-        if (ceo.flip) {
-          ctx.translate(sx * 2, 0);
-          ctx.scale(-1, 1);
-        }
-        ctx.drawImage(sprite.canvas, sx - sprite.ax, sy - lift - sprite.ay);
-        ctx.restore();
+        const sprite = figureSprite(look, ceo.seated ? 'type' : ceo.walking ? 'walk' : 'stand', frame % 24, facing.view, !ceo.seated);
+        drawFigure(ctx, sprite, sx, sy - lift * RES, facing.flip);
         if (!this.ceoLabel) {
           this.ceoLabel = document.createElement('div');
           this.ceoLabel.className = 'agent-label ceo-label';
@@ -493,7 +623,7 @@ export class World {
         const text = withoutEszett(this.company!.ceo?.name ?? DEFAULT_CEO.name);
         const strong = this.ceoLabel.firstElementChild as HTMLElement;
         if (strong.textContent !== text) strong.textContent = text;
-        this.ceoLabel.style.transform = `translate(calc(${Math.round(sx * this.scale)}px - 50%), calc(${Math.round((sy - 33 - lift) * this.scale)}px - 100%))`;
+        this.ceoLabel.style.transform = `translate(calc(${Math.round(sx * this.scale)}px - 50%), calc(${Math.round((sy - (33 + lift) * RES) * this.scale)}px - 100%))`;
       },
     });
   }
@@ -501,8 +631,14 @@ export class World {
   private useRoom(): void {
     const loc = roomOf(this.company!, this.viewFloor);
     const floors = buildingAt(this.company!.town, siteAt(this.company!, this.viewFloor).siteId).floors;
-    const key = `${loc.id}:${loc.w}x${loc.d}:${storeyOf(this.viewFloor)}/${floors}`;
-    if (!this.rooms.has(key)) this.rooms.set(key, buildRoom(loc, storeyOf(this.viewFloor), true, floors));
+    const low = this.wallMode === 'down';
+    const key = `${loc.id}:${loc.w}x${loc.d}:${storeyOf(this.viewFloor)}/${floors}:${this.cam}:${low ? 'low' : 'high'}`;
+    if (!this.rooms.has(key)) {
+      // Gedreht steht das Haus allein auf seiner Wiese: Die Stadt rundherum gibt es nur in der Grundansicht.
+      const xf = this.xf();
+      const view = this.cam === 0 ? loc : { ...loc, w: xf.w, d: xf.d, door: xf.tile(loc.door) };
+      this.rooms.set(key, buildRoom(view, storeyOf(this.viewFloor), this.cam === 0, floors, this.cam === 0 && !low, low));
+    }
     const next = this.rooms.get(key)!;
     const resized = this.room && (this.room.width !== next.width || this.room.height !== next.height);
     this.room = next;
@@ -521,7 +657,9 @@ export class World {
     for (const floor of floors) {
       const items = itemsOnFloor(company.placed, floor);
       this.blockedByFloor.set(floor, blockedSet(roomOf(company, floor), items));
-      this.edgesByFloor.set(floor, blockedEdges(items));
+      const edges = blockedEdges(items);
+      for (const e of heightEdges(roomOf(company, floor), items, heightsOf(company, floor))) edges.add(e);
+      this.edgesByFloor.set(floor, edges);
     }
     if (moved) {
       this.actors.clear();
@@ -649,7 +787,7 @@ export class World {
     const roomH = this.room?.height ?? 240;
     // Skaliert in ganzen Gerätepixeln: So bleibt die Pixelgrafik auch bei Zwischengrößen scharf.
     const dpr = window.devicePixelRatio || 1;
-    const fit = Math.min(rect.width / (roomW - 60), rect.height / (roomH - 10));
+    const fit = Math.min(rect.width / (roomW - 60 * RES), rect.height / (roomH - 10 * RES));
     const fitted = Math.max(1, Math.floor(fit * dpr));
     this.zoomSteps = Math.max(1 - fitted, Math.min(MAX_DEVICE_SCALE - fitted, this.zoomSteps));
     this.scale = (fitted + this.zoomSteps) / dpr;
@@ -677,8 +815,9 @@ export class World {
     const limitY = Math.max(0, (roomH - this.lowH) / 2) + this.lowH * 0.35;
     this.panX = Math.max(-limitX, Math.min(limitX, this.panX));
     this.panY = Math.max(-limitY, Math.min(limitY, this.panY));
-    this.offX = Math.floor((this.lowW - roomW) / 2 + this.panX);
-    this.offY = Math.floor((this.lowH - roomH) / 2 + this.panY);
+    // Auf ganze RES-Schritte, damit die vergrößerte Stadt genau unter dem Büro liegt.
+    this.offX = Math.floor(((this.lowW - roomW) / 2 + this.panX) / RES) * RES;
+    this.offY = Math.floor(((this.lowH - roomH) / 2 + this.panY) / RES) * RES;
   }
 
   /** Stufenweise zoomen. Der Punkt unter der Maus bleibt dabei, wo er ist. */
@@ -721,101 +860,131 @@ export class World {
     return { x: (e.clientX - r.left) / this.scale, y: (e.clientY - r.top) / this.scale };
   }
 
-  /** Die Wandkante, die der Maus am nächsten liegt. Nur innerhalb des Raums. */
-  private edgeAt(x: number, y: number): WallEdge | null {
-    if (!this.room) return null;
-    const [ox, oy] = this.room.pen.pt(0, 0);
+  /** Bildschirm in Ansichtskoordinaten, auf Höhe h über dem Boden. */
+  private viewPoint(x: number, y: number, h = 0): [number, number] {
+    const [ox, oy] = this.room!.pen.pt(0, 0);
     const dx = x - this.offX - ox;
-    const dy = y - this.offY - oy;
-    const fi = (dx / 16 + dy / 8) / 2;
-    const fj = (dy / 8 - dx / 16) / 2;
+    const dy = y - this.offY - oy + h * RES;
+    const tw = 16 * RES;
+    const th = 8 * RES;
+    return [(dx / tw + dy / th) / 2, (dy / th - dx / tw) / 2];
+  }
+
+  /** Die Wandkante, die der Maus am nächsten liegt. Nur innerhalb des Raums. Für Wandgegenstände mit der sichtbaren Seite. */
+  private edgeAt(x: number, y: number): WallEdge | null {
+    if (!this.room || !this.company) return null;
+    const xf = this.xf();
+    // Auf einem Podest liegt die Kante höher im Bild: Die Höhe des Feldes unter der Maus zählt.
+    const under = this.tileAt(x, y);
+    const lift = under ? this.height()(under) * LEVEL_PX : 0;
+    const [fi, fj] = this.viewPoint(x, y, lift);
     const li = Math.round(fi);
     const lj = Math.round(fj);
     // Die Linie, die näher liegt, gewinnt. Liegt die Maus auf einer Linie längs i, ist es eine Kante rot 0.
-    const edge: WallEdge = Math.abs(fj - lj) <= Math.abs(fi - li) ? { i: Math.floor(fi), j: lj, rot: 0 } : { i: li, j: Math.floor(fj), rot: 1 };
+    const view: WallEdge = Math.abs(fj - lj) <= Math.abs(fi - li) ? { i: Math.floor(fi), j: lj, rot: 0 } : { i: li, j: Math.floor(fj), rot: 1 };
+    if (view.rot === 0 ? view.i < 0 || view.i >= xf.w || view.j < 0 || view.j > xf.d : view.j < 0 || view.j >= xf.d || view.i < 0 || view.i > xf.w) return null;
+    const edge = xf.edgeBack(view);
     const loc = this.location();
     const [a, b] = wallSides(edge);
     const inside = (t: Tile) => t.i >= 0 && t.j >= 0 && t.i < loc.w && t.j < loc.d;
+    const kind = this.ghost?.kind ?? '';
+    if (isWallHung(kind)) {
+      // Ein Bild hängt an der Seite, die man gerade sieht.
+      const hung = { ...edge, rot: (edge.rot + (xf.edgeSide(edge) === 'front' ? 0 : 2)) as Rotation };
+      const facing = hung.rot < 2 ? b : a;
+      return inside(facing) ? hung : null;
+    }
     if (inside(a) && inside(b)) return edge;
     // Fenster gehen auch in die hinteren Außenwände.
-    const kind = this.ghost?.kind ?? '';
     return onBackWall(loc, { kind: kind as FurnitureKind, ...edge }) ? edge : null;
   }
 
   /**
-   * Eine Wand unter der Maus. Die Maus zeigt irgendwo auf den Körper der Wand, deshalb wird die Kante
-   * für mehrere Höhen zurückgerechnet, vom Fuß bis fast oben.
+   * Eine Wand oder ein Wandgegenstand unter der Maus. Die Maus zeigt irgendwo auf den Körper der Wand, deshalb
+   * wird die Kante für mehrere Höhen zurückgerechnet, vom Fuß bis fast oben.
    */
   private wallAt(x: number, y: number): PlacedItem | null {
     if (!this.room) return null;
-    const placed = itemsOnFloor(this.company?.placed ?? [], this.viewFloor).filter((p) => isEdgeKind(p.kind));
-    if (!placed.length) return null;
-    const [ox, oy] = this.room.pen.pt(0, 0);
-    const dx = x - this.offX - ox;
-    for (const h of [0, 10, 20, 30, 40]) {
-      const dy = y - this.offY - oy + h;
-      const fi = (dx / 16 + dy / 8) / 2;
-      const fj = (dy / 8 - dx / 16) / 2;
-      const li = Math.round(fi);
-      const lj = Math.round(fj);
-      if (Math.abs(fj - lj) < 0.3) {
-        const hit = placed.find((p) => p.rot === 0 && p.j === lj && p.i === Math.floor(fi));
-        if (hit) return hit;
+    const xf = this.xf();
+    const all = itemsOnFloor(this.company?.placed ?? [], this.viewFloor);
+    const hung = all.filter((p) => isWallHung(p.kind)).map((p) => ({ p, v: xf.item(p) })).filter(({ p, v }) => v.rot < 2 && this.wallHigh(p));
+    const walls = all.filter((p) => isEdgeKind(p.kind)).map((p) => ({ p, v: xf.item(p) }));
+    const find = (list: { p: PlacedItem; v: PlacedItem }[], heights: number[], near: number) => {
+      for (const h of heights) {
+        const [fi, fj] = this.viewPoint(x, y, h);
+        const li = Math.round(fi);
+        const lj = Math.round(fj);
+        if (Math.abs(fj - lj) < near) {
+          const hit = list.find(({ v }) => v.rot % 2 === 0 && v.j === lj && v.i === Math.floor(fi));
+          if (hit) return hit.p;
+        }
+        if (Math.abs(fi - li) < near) {
+          const hit = list.find(({ v }) => v.rot % 2 === 1 && v.i === li && v.j === Math.floor(fj));
+          if (hit) return hit.p;
+        }
       }
-      if (Math.abs(fi - li) < 0.3) {
-        const hit = placed.find((p) => p.rot === 1 && p.i === li && p.j === Math.floor(fj));
-        if (hit) return hit;
-      }
+      return null;
+    };
+    return (hung.length ? find(hung, [22, 26, 30, 34], 0.35) : null) ?? (walls.length ? find(walls, this.wallsLow ? [0, 4] : [0, 10, 20, 30, 40], 0.3) : null);
+  }
+
+  private tileAt(x: number, y: number): Tile | null {
+    if (!this.room || !this.company) return null;
+    const xf = this.xf();
+    const height = this.height();
+    // Ein Podest liegt höher im Bild. Zuerst wird das höchste Feld unter der Maus gesucht.
+    for (let level = height === FLAT ? 0 : MAX_LEVEL; level >= 0; level--) {
+      const [fi, fj] = this.viewPoint(x, y, level * LEVEL_PX);
+      const view = { i: Math.floor(fi), j: Math.floor(fj) };
+      if (view.i < 0 || view.j < 0 || view.i >= xf.w || view.j >= xf.d) continue;
+      const tile = xf.tileBack(view);
+      if (height(tile) === level) return tile;
     }
     return null;
   }
 
-  private tileAt(x: number, y: number): Tile | null {
-    if (!this.room) return null;
-    const [ox, oy] = this.room.pen.pt(0, 0);
-    const dx = x - this.offX - ox;
-    const dy = y - this.offY - oy;
-    const i = Math.floor((dx / 16 + dy / 8) / 2);
-    const j = Math.floor((dy / 8 - dx / 16) / 2);
-    const loc = this.location();
-    return i >= 0 && j >= 0 && i < loc.w && j < loc.d ? { i, j } : null;
-  }
-
   /** Das Möbelstück unter dem Zeiger. Ein Regal ist hoch: Getroffen wird das ganze Bild, nicht nur sein Bodenfeld. */
   private boardAt(x: number, y: number): boolean {
-    if (!this.room || storeyOf(this.viewFloor) > 0) return false;
+    if (!this.room || storeyOf(this.viewFloor) > 0 || this.cam !== 0) return false;
     const b = this.room.board;
     const [ox, oy] = this.room.pen.pt(0, 0);
-    const u = x - this.offX - ox;
+    const fu = x - this.offX - ox;
+    const u = fu / RES;
     if (u < b.u || u >= b.u + b.w) return false;
-    const up = oy + this.offY + Math.floor(u / 2) - y;
+    const up = (oy + this.offY + Math.floor(fu / 2) - y) / RES;
     return up >= b.v && up < b.v + b.h;
   }
 
   /** Die Türen hängen an der Wand, deshalb zählt hier die Stelle im Bild, nicht das Feld. */
   private doorAt(x: number, y: number): boolean {
-    if (!this.room || storeyOf(this.viewFloor) > 0) return false;
+    if (!this.room || storeyOf(this.viewFloor) > 0 || this.cam !== 0) return false;
     const { pen } = this.room;
     return this.room.doors.some((door) => {
       const [ox, oy] = pen.pt(0, door.j);
-      const u = door.face === 'J' ? x - this.offX - ox : this.offX + ox - x;
+      const fu = door.face === 'J' ? x - this.offX - ox : this.offX + ox - x;
+      const u = fu / RES;
       if (u < door.u || u >= door.u + door.w) return false;
-      const up = oy + this.offY + Math.floor(u / 2) - y;
+      const up = (oy + this.offY + Math.floor(fu / 2) - y) / RES;
       return up >= 0 && up < door.h;
     });
   }
 
   private itemAt(x: number, y: number): PlacedItem | null {
+    if (!this.room || !this.company) return null;
+    const xf = this.xf();
+    const items = itemsOnFloor(this.company.placed, this.viewFloor).filter((p) => !isEdgeKind(p.kind) && !isWallHung(p.kind)).map((p) => ({ p, v: xf.item(p) }));
     // Von unten nach oben abgesucht: Was auf dem Bildschirm tiefer steht, steht weiter vorn und verdeckt den Rest.
-    for (let z = 0; z <= 42; z += 4) {
-      const tile = this.tileAt(x, y + z);
-      if (!tile) continue;
-      const item = itemsOnFloor(this.company?.placed ?? [], this.viewFloor).find((p) => {
-        if (isEdgeKind(p.kind)) return false;
-        const size = footprint(p.kind, p.rot);
-        return z <= ITEM_HEIGHT[p.kind] && tile.i >= p.i && tile.j >= p.j && tile.i < p.i + size.w && tile.j < p.j + size.d;
+    const height = this.height();
+    const lifted = items.map((x) => ({ ...x, z: this.itemZ(x.p, height) }));
+    for (let z = 0; z <= 50 + MAX_LEVEL * LEVEL_PX; z += 4) {
+      const [fi, fj] = this.viewPoint(x, y, z);
+      const ti = Math.floor(fi);
+      const tj = Math.floor(fj);
+      const hit = lifted.find(({ p, v, z: base }) => {
+        const size = footprint(v.kind, v.rot);
+        return z >= base && z - base <= ITEM_HEIGHT[p.kind] && ti >= v.i && tj >= v.j && ti < v.i + size.w && tj < v.j + size.d;
       });
-      if (item) return item;
+      if (hit) return hit.p;
     }
     return null;
   }
@@ -836,7 +1005,7 @@ export class World {
     for (const actor of this.actors.values()) {
       if (actor.floor !== this.viewFloor) continue;
       const { x: sx, y: sy } = actor.lastScreen;
-      if (x >= sx - 10 && x <= sx + 10 && y >= sy - 30 && y <= sy + 2) {
+      if (x >= sx - 10 * RES && x <= sx + 10 * RES && y >= sy - 30 * RES && y <= sy + 2 * RES) {
         const depth = actor.i + actor.j;
         if (!best || depth > best.depth) best = { id: actor.id, depth };
       }
@@ -852,11 +1021,10 @@ export class World {
     if (!item) return false;
     const across = 1;
     const along = (item.rot < 2 ? 1.04 : 0.04) + 0.44;
-    const i = item.i + (item.rot % 2 ? along : across);
-    const j = item.j + (item.rot % 2 ? across : along);
-    const sx = room.pen.ox + this.offX + (i - j) * 16;
-    const sy = room.pen.oy + this.offY + (i + j) * 8 - LAPTOP_Z;
-    return Math.abs(x - sx) <= 14 && Math.abs(y - sy) <= 11;
+    const [i, j] = this.xf().pt(item.i + (item.rot % 2 ? along : across), item.j + (item.rot % 2 ? across : along));
+    const sx = room.pen.ox + this.offX + (i - j) * 16 * RES;
+    const sy = room.pen.oy + this.offY + ((i + j) * 8 - LAPTOP_Z) * RES;
+    return Math.abs(x - sx) <= 14 * RES && Math.abs(y - sy) <= 11 * RES;
   }
 
   private onMove(e: PointerEvent): void {
@@ -875,8 +1043,9 @@ export class World {
       }
     }
     const { x, y } = this.low(e);
-    if (this.ghost && isEdgeKind(this.ghost.kind)) this.callbacks.onEdgeHover(this.edgeAt(x, y));
-    else this.callbacks.onTileHover(this.tileAt(x, y));
+    this.hoverTile = this.tileAt(x, y);
+    if (this.ghost && (isEdgeKind(this.ghost.kind) || isWallHung(this.ghost.kind))) this.callbacks.onEdgeHover(this.edgeAt(x, y));
+    else this.callbacks.onTileHover(this.hoverTile);
     this.canvas.style.cursor = this.ghost ? 'crosshair' : this.actorAt(x, y) || this.laptopAt(x, y) || this.doorAt(x, y) ? 'pointer' : 'default';
   }
 
@@ -888,7 +1057,7 @@ export class World {
     }
     const { x, y } = this.low(e);
     if (this.ghost) {
-      if (isEdgeKind(this.ghost.kind)) {
+      if (isEdgeKind(this.ghost.kind) || isWallHung(this.ghost.kind)) {
         const edge = this.edgeAt(x, y);
         if (edge) this.callbacks.onEdgeClick(edge);
         return;
@@ -927,7 +1096,7 @@ export class World {
     // Eine Wand liegt dünn auf dem Boden. Ist die Maus nah genug dran, gewinnt sie gegen das Möbel daneben.
     const item = this.wallAt(x, y) ?? this.itemAt(x, y);
     if (item) {
-      if (isEdgeKind(item.kind)) {
+      if (isEdgeKind(item.kind) || isWallHung(item.kind)) {
         // Eine Wand wird wie ein Möbelstück gewählt. Entfernen geht über die Taste Entf.
         this.callbacks.onItemClick(item);
         return;
@@ -948,6 +1117,7 @@ export class World {
     }
     const tile = this.tileAt(x, y);
     if (tile) {
+      this.callbacks.onFloorClick?.(tile);
       if (!this.blocked.has(`${tile.i},${tile.j}`)) this.walkCeo(tile);
       const zone = this.company?.departments.find((d) => tile.i >= d.i && tile.j >= d.j && tile.i < d.i + d.w && tile.j < d.j + d.d);
       if (zone) this.callbacks.onDepartmentClick(zone.id);
@@ -1136,6 +1306,19 @@ export class World {
   /** Einen Schritt weitergehen. true, solange die Figur unterwegs ist. */
   private stepWalk(actor: Actor, dt: number): boolean {
     if (actor.path.length) {
+      // Steht inzwischen eine Wand oder ein Möbelstück im Weg, wird der Weg neu gesucht. Durch geht niemand.
+      const here = { i: Math.floor(actor.i), j: Math.floor(actor.j) };
+      const ahead = actor.path[0];
+      const goal = actor.path[actor.path.length - 1];
+      const crossing = here.i !== ahead.i || here.j !== ahead.j;
+      if (crossing && (this.edges.has(`${here.i},${here.j}>${ahead.i},${ahead.j}`) || (this.blocked.has(`${ahead.i},${ahead.j}`) && actor.path.length > 1))) {
+        actor.path = findPath(this.location(), this.blocked, here, goal, this.edges);
+        if (!actor.path.length) {
+          actor.i = here.i + 0.5;
+          actor.j = here.j + 0.5;
+          return false;
+        }
+      }
       const next = actor.path[0];
       const tx = next.i + 0.5;
       const ty = next.j + 0.5;
@@ -1186,22 +1369,36 @@ export class World {
   }
 
   /** Das Kontingent ist leer: Wer nicht gerade arbeitet, geht heim. true, solange das so ist. */
+  /**
+   * Feierabend: Bei Nacht geht die Figur zur Haustür hinaus und weiter in der Stadt zu ihrem Haus. Solange sie
+   * unterwegs oder daheim ist, ist sie im Büro nicht zu sehen. Am Morgen kommt sie durch die Tür zurück.
+   */
   private goesHome(actor: Actor, agent: Agent, now: number, dt: number): boolean {
-    const closed = agent.providerId === 'anthropic' && quotaClosedUntil(this.quota, Date.now()) !== null && !agent.live.runId;
-    if (!closed) {
+    const phase = commute.commutes(agent.id) ? commute.phaseOf(agent.id) : commute.offDuty(agent) ? 'exiting' : 'work';
+    const atDoor = () => {
+      const door = roomOf(this.company!, siteBase(actor.floor)).door;
+      actor.i = door.i + 0.5;
+      actor.j = door.j + 0.5;
+      actor.goal = '';
+      actor.path = [];
+    };
+    if (phase === 'work' || phase === 'entering') {
       if (actor.home) {
         // Wieder da: Die Figur kommt durch die Haustür und geht an ihren Platz.
         actor.home = false;
         actor.hidden = false;
-        const door = roomOf(this.company!, siteBase(actor.floor)).door;
-        actor.i = door.i + 0.5;
-        actor.j = door.j + 0.5;
-        actor.goal = '';
-        actor.path = [];
+        actor.floor = siteBase(actor.floor);
+        atDoor();
       }
+      if (phase === 'entering') commute.entered(agent.id, now);
       return false;
     }
     if (actor.home) return true;
+    if (phase !== 'exiting') {
+      actor.home = true;
+      actor.hidden = true;
+      return true;
+    }
     if (actor.pause) this.endPause(actor);
     const ground = siteBase(actor.floor);
     this.setGoal(actor, 'heim', this.onFloor(ground, () => this.location().door), ground);
@@ -1209,12 +1406,32 @@ export class World {
     actor.home = true;
     actor.hidden = true;
     actor.pose = 'stand';
+    commute.exited(agent.id, now);
     return true;
   }
 
   setQuota(plan: PlanStatus | null | undefined): void {
     this.quota = plan ?? null;
+    commute.setUsage({ plan: this.quota, override: USAGE_OVERRIDE });
   }
+
+  /** Verbrauch des KI-Budgets, 0 bis 1. Ohne Abo bestimmt er das Tageslicht. */
+  private budgetUsed = 0;
+  /** Wie dunkel es gerade ist. Gleitet langsam zum Ziel, damit der Abend nicht springt. */
+  private dark = 0;
+  private darkSet = false;
+
+  setBudgetUse(used: number): void {
+    this.budgetUsed = Math.max(0, Math.min(1, used));
+    commute.setUsage({ budgetUsed: this.budgetUsed, override: USAGE_OVERRIDE });
+  }
+
+  /** Das Nutzungsguthaben bestimmt die Tageszeit: Abo, wenn eines gemeldet ist, sonst das KI-Budget. */
+  private usage(): number {
+    return USAGE_OVERRIDE ?? quotaUsed(this.quota) ?? this.budgetUsed;
+  }
+
+
 
   private meetingFloor(agent: Agent): number {
     const help = this.helpOf(agent);
@@ -1310,18 +1527,21 @@ export class World {
     } else if ((working || stuck) && seat) {
       this.setGoal(actor, `seat:${deskFloor}:${seat.tile.i},${seat.tile.j}`, seat.tile, deskFloor);
     } else if ((kind === 'review' || kind === 'done') && seat) {
-      this.setGoal(actor, `stand:${deskFloor}:${seat.tile.i},${seat.tile.j}`, seat.tile, deskFloor);
+      // Wer fertig ist, sitzt am Platz und wartet auf die Abnahme.
+      this.setGoal(actor, `seat:${deskFloor}:${seat.tile.i},${seat.tile.j}`, seat.tile, deskFloor);
     } else if ((kind === 'idle' || kind === 'stopped') && seat && actor.floor !== deskFloor) {
       // Wer frei hat, verbringt die Zeit auf der Etage des eigenen Platzes.
       if (actor.pause) this.endPause(actor);
-      this.setGoal(actor, `stand:${deskFloor}:${seat.tile.i},${seat.tile.j}`, seat.tile, deskFloor);
+      this.setGoal(actor, `seat:${deskFloor}:${seat.tile.i},${seat.tile.j}`, seat.tile, deskFloor);
     } else if (kind === 'idle' || kind === 'stopped') {
       if (actor.pause && now > actor.pause.until) this.endPause(actor);
       if (!actor.pause && now > actor.nextWander) {
-        actor.nextWander = now + 5000 + Math.random() * 9000;
+        // Freie Figuren sitzen meist am Platz und stehen nur ab und zu für eine Pause auf.
+        actor.nextWander = now + 12000 + Math.random() * 20000;
         actor.goal = '';
-        this.pickPastime(actor, now);
+        if (!seat || Math.random() < 0.4) this.pickPastime(actor, now);
       }
+      if (!actor.pause && seat && (!actor.goal || actor.goal.startsWith('seat:'))) this.setGoal(actor, `seat:${deskFloor}:${seat.tile.i},${seat.tile.j}`, seat.tile, deskFloor);
     }
     // Sobald ein echter Lauf beginnt oder jemand gebraucht wird, ist die Pause vorbei.
     if (kind !== 'idle' && kind !== 'stopped' && actor.pause) this.endPause(actor);
@@ -1363,7 +1583,8 @@ export class World {
         kind === 'thinking' || kind === 'waiting' || kind === 'starting' ? 'think'
         : kind === 'reading' ? 'read'
         : stuck ? 'slump'
-        : 'type';
+        : working ? 'type'
+        : 'sit';
       return;
     }
     if (actor.pause?.kind === 'plausch') {
@@ -1502,6 +1723,61 @@ export class World {
     this.draw(time, dt);
   }
 
+  /**
+   * Abendstimmung: Erst wird alles gedämpft, dann legen Lampen, Lichterkette und Bildschirme ihren Schein darüber.
+   * Bildschirme leuchten heller, wenn dort gerade ein echter Lauf arbeitet.
+   */
+  private drawEvening(ctx: Ctx, pen: Pen, company: Company, busyDesks: Set<string>, time: number, dark: number): void {
+    const room = this.room!;
+    const xf = this.xf();
+    const glow = (x: number, y: number, r: number, color: string, strength: number) => {
+      const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+      const [cr, cg, cb] = [1, 3, 5].map((k) => parseInt(color.slice(k, k + 2), 16));
+      g.addColorStop(0, `rgba(${cr},${cg},${cb},${strength})`);
+      g.addColorStop(0.55, `rgba(${cr},${cg},${cb},${strength * 0.35})`);
+      g.addColorStop(1, `rgba(${cr},${cg},${cb},0)`);
+      ctx.fillStyle = g;
+      ctx.fillRect(x - r, y - r, r * 2, r * 2);
+    };
+    // Erst warmes Dämmerlicht, dann blaue Nacht. Lampen gehen mit der Dunkelheit an.
+    const tint = dark < 0.5 ? mix('#ffffff', '#e8b088', dark * 2) : mix('#e8b088', '#5c5c86', (dark - 0.5) * 2);
+    const lamps = Math.max(0, (dark - 0.25) / 0.75);
+    ctx.save();
+    ctx.globalCompositeOperation = 'multiply';
+    ctx.fillStyle = tint;
+    ctx.fillRect(0, 0, this.lowW, this.lowH);
+    ctx.globalCompositeOperation = 'lighter';
+    const flicker = REDUCED_MOTION ? 1 : 0.92 + Math.sin(time / 700) * 0.04;
+    for (const light of room.lights) glow(light.x + this.offX, light.y + this.offY, light.r, light.color, light.strength * flicker * lamps);
+    // Bildschirme und Laptop: kühles Licht vor dem Tisch
+    for (const item of itemsOnFloor(company.placed, this.viewFloor)) {
+      if (item.kind !== 'desk' && item.kind !== 'ceoDesk') continue;
+      const v = xf.item(item);
+      const [x, y] = pen.pt(v.i + 1, v.j + 1, 20);
+      const busy = busyDesks.has(item.id);
+      glow(x, y, 60 * RES, busy ? '#5ab4ff' : '#3a6a9a', (busy ? 0.42 : 0.18) * lamps);
+    }
+    ctx.restore();
+    // Lämpchen: ein heller Kern über dem Schein
+    for (const light of room.lights) {
+      if (!light.bulb || lamps < 0.2) continue;
+      rect(ctx, light.x + this.offX, light.y + this.offY - 1, 1, 2, '#fff4c8');
+    }
+  }
+
+  /** Die Stadt hat ihre eigene, gröbere Auflösung. Sie wird klein gezeichnet und RES-fach vergrößert eingesetzt. */
+  private townCanvas: Layer | null = null;
+  private townLayer(ctx: Ctx, draw: (t: Ctx, x: number, y: number, w: number, h: number) => void, cornerX: number, cornerY: number): void {
+    const w = Math.ceil(this.lowW / RES) + 2;
+    const h = Math.ceil(this.lowH / RES) + 2;
+    if (!this.townCanvas || this.townCanvas.canvas.width !== w || this.townCanvas.canvas.height !== h) this.townCanvas = layer(w, h);
+    const t = this.townCanvas.ctx;
+    t.clearRect(0, 0, w, h);
+    // Der Raum liegt auf geraden Bildpunkten, damit Stadt und Büro auf demselben groben Raster sitzen.
+    draw(t, Math.round(cornerX / RES), Math.round(cornerY / RES), w, h);
+    ctx.drawImage(this.townCanvas.canvas, 0, 0, w * RES, h * RES);
+  }
+
   private drawSprite(ctx: Ctx, s: Sprite, [x, y]: [number, number]): void {
     ctx.drawImage(s.canvas, x - s.ax, y - s.ay);
   }
@@ -1510,7 +1786,7 @@ export class World {
     const ctx = this.screen;
     const room = this.room!;
     const company = this.company!;
-    const pen = new Pen(ctx, room.pen.ox + this.offX, room.pen.oy + this.offY);
+    const pen = new Pen(ctx, room.pen.ox + this.offX, room.pen.oy + this.offY, RES);
     const tick = Math.floor(time / 170);
 
     // Wasser
@@ -1520,10 +1796,11 @@ export class World {
     }
     // Rund ums Büro liegt die echte Stadt, Feld für Feld in derselben Grösse.
     const view = this.groundOfView();
+    const xf = this.xf();
     const [cornerX, cornerY] = pen.pt(0, 0);
-    drawTownBehind(ctx, company, view.siteId, view.room.w, view.room.d, view.room.door.i, cornerX, cornerY, this.lowW, this.lowH);
+    if (this.cam === 0) this.townLayer(ctx, (t, x, y, w, h) => drawTownBehind(t, company, view.siteId, view.room.w, view.room.d, view.room.door.i, x, y, w, h, commute.townSprites(time)), cornerX, cornerY);
     ctx.drawImage(room.base.canvas, this.offX, this.offY);
-    for (const department of company.departments.filter((d) => floorOf(d) === this.viewFloor)) this.drawZone(ctx, pen, department, department.color, 0.22, false, department);
+    for (const department of company.departments.filter((d) => floorOf(d) === this.viewFloor)) this.drawZone(ctx, pen, xf.rect(department), department.color, 0.22, false, department);
     for (const [id, el] of this.zoneLabels) {
       const department = company.departments.find((d) => d.id === id);
       if (department) {
@@ -1533,27 +1810,73 @@ export class World {
       el.remove();
       this.zoneLabels.delete(id);
     }
+    // Nachbarhäuser, die vor der Rückwand stehen, verdecken sie. Möbel und Figuren kommen danach und bleiben sichtbar.
+    if (this.cam === 0) {
+      // Der Boden des Büros bleibt frei: Ein Haus daneben verdeckt Wände, aber nie den Blick auf den Boden.
+      const e = 0.05;
+      const floor = [pen.pt(-e, -e), pen.pt(view.room.w + e, -e), pen.pt(view.room.w + e, view.room.d + e), pen.pt(-e, view.room.d + e)];
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(0, 0, this.lowW, this.lowH);
+      floor.forEach(([x, y], index) => (index ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
+      ctx.closePath();
+      ctx.clip('evenodd');
+      this.townLayer(ctx, (t, x, y, w, h) => drawTownInFront(t, company, view.siteId, view.room.w, view.room.d, x, y, w, h), cornerX, cornerY);
+      ctx.restore();
+    }
     this.drawRoomZones(ctx, pen, company);
-    if (storeyOf(this.viewFloor) === 0) this.drawBoard(pen);
+    // Einzeln verlegter Boden liegt über dem Boden des Raums.
+    const byStyle = new Map<FloorStyle, [number, number][]>();
+    for (const t of paintedTiles(company, this.viewFloor)) {
+      const v = xf.tile(t);
+      byStyle.set(t.style, [...(byStyle.get(t.style) ?? []), [v.i, v.j]]);
+    }
+    for (const [style, tiles] of byStyle) this.paintFloor(ctx, pen, tiles, style);
+    const height = heightsOf(company, this.viewFloor);
+    const lift = (z: number) => pen.lifted(z);
+    if (storeyOf(this.viewFloor) === 0 && this.cam === 0) this.drawBoard(pen);
 
     const items: { depth: number; draw: () => void }[] = [];
+
+    // Podeste: jedes Feld ein Quader mit Fundament, oben der Boden des Feldes.
+    if (height !== FLAT) {
+      const loc = this.location();
+      for (let i = 0; i < loc.w; i++) {
+        for (let j = 0; j < loc.d; j++) {
+          const level = height({ i, j });
+          if (!level) continue;
+          const v = xf.tile({ i, j });
+          const style = floorStyleAt(company, this.viewFloor, { i, j });
+          items.push({
+            depth: v.i + v.j + 0.2,
+            draw: () => {
+              this.drawSprite(ctx, platformSprite(level, PLATFORM_TOP), pen.pt(v.i, v.j));
+              if (style) this.paintFloor(ctx, lift(level * LEVEL_PX), [[v.i, v.j]], style);
+            },
+          });
+        }
+      }
+    }
 
     // Ein Monitor leuchtet nur, wenn am Platz gearbeitet wird, nicht während einer Besprechung.
     const atDesk = company.runs.filter((r) => r.status === 'running' && !r.meetingId).map((r) => r.agentId);
     const busyDesks = new Set(company.agents.filter((a) => atDesk.includes(a.id)).map((a) => a.deskId));
     // Weiche Schatten unter allem, was im Raum steht. Sie halten die Möbel am Boden.
-    for (const item of itemsOnFloor(company.placed, this.viewFloor)) {
-      if (item.kind === 'meeting' || isEdgeKind(item.kind) || (this.ghost && this.ghost.kind !== 'zone' && this.ghost.id === item.id)) continue;
+    for (const source of itemsOnFloor(company.placed, this.viewFloor)) {
+      if (source.kind === 'meeting' || isEdgeKind(source.kind) || isWallHung(source.kind) || (this.ghost && this.ghost.kind !== 'zone' && this.ghost.id === source.id)) continue;
+      const item = xf.item(source);
       const size = footprint(item.kind, item.rot);
+      const pen = lift(this.itemZ(source, height));
       for (const [grow, alpha] of [[0.14, 0.1], [0.04, 0.16]] as const) {
         fillPoly(ctx, [pen.pt(item.i + 0.08 - grow, item.j + 0.14), pen.pt(item.i + size.w + grow, item.j + 0.14), pen.pt(item.i + size.w + grow, item.j + size.d + grow), pen.pt(item.i + 0.08 - grow, item.j + size.d + grow)], `rgba(14,18,30,${alpha})`);
       }
     }
     for (const item of itemsOnFloor(company.placed, this.viewFloor)) {
       if (this.ghost && this.ghost.kind !== 'zone' && this.ghost.id === item.id) continue;
-      this.addItem(items, ctx, pen, item, busyDesks.has(item.id), tick);
+      this.addItem(items, ctx, lift(this.itemZ(item, height)), xf.item(item), busyDesks.has(item.id), tick, item);
     }
 
+    commute.sync(company, time);
     this.updateLifts(time, dt);
     this.moveCeo(dt);
     this.drawCeo(ctx, pen, time, items);
@@ -1567,30 +1890,28 @@ export class World {
       if (actor.floor !== this.viewFloor || actor.hidden) continue;
       const seated = isSeated(actor);
       const zLift = seated ? 9 : 0;
+      const [vi, vj] = xf.pt(actor.i, actor.j);
+      const facing = viewOfDir(xf.dir(dirOfView(actor.view, actor.flip)));
+      const z = this.pointZ(actor.i, actor.j, height);
       items.push({
-        depth: actor.i + actor.j,
+        depth: vi + vj,
         draw: () => {
-          const [sx, sy] = pen.pt(actor.i, actor.j);
-          actor.lastScreen = { x: sx, y: sy - zLift };
+          const [sx, sy] = pen.pt(vi, vj, z);
+          actor.lastScreen = { x: sx, y: sy - zLift * RES };
           if (!seated) {
-            rect(ctx, sx - 5, sy - 1, 10, 2, 'rgba(10,16,28,.28)');
+            rect(ctx, sx - 5 * RES, sy - RES, 10 * RES, 2 * RES, 'rgba(10,16,28,.28)');
             if (agent.id === this.selected) this.drawSelection(ctx, pen, actor);
           }
           const frame = actor.pose === 'walk' ? Math.floor(time / 110) : REDUCED_MOTION ? 0 : Math.floor(time / (actor.pose === 'type' ? 150 : 520));
-          const sprite = characterSprite(agent.look, actor.pose, frame % 24, actor.view, !seated);
-          ctx.save();
-          if (actor.flip) {
-            ctx.translate(sx * 2, 0);
-            ctx.scale(-1, 1);
-          }
-          ctx.drawImage(sprite.canvas, sx - sprite.ax, sy - zLift - sprite.ay);
-          ctx.restore();
+          const sprite = figureSprite(agent.look, actor.pose, frame % 24, facing.view, !seated);
+          drawFigure(ctx, sprite, sx, sy - zLift * RES, facing.flip);
           if (agent.live.kind === 'handoff') {
             // Das Blatt, das gerade übergeben wird
-            rect(ctx, sx - 4, sy - 17, 8, 9, '#111a29');
-            rect(ctx, sx - 3, sy - 16, 6, 7, '#f2f4ef');
-            rect(ctx, sx - 2, sy - 14, 4, 1, '#7f93a8');
-            rect(ctx, sx - 2, sy - 12, 3, 1, '#7f93a8');
+            const r = RES;
+            rect(ctx, sx - 4 * r, sy - 17 * r, 8 * r, 9 * r, '#111a29');
+            rect(ctx, sx - 3 * r, sy - 16 * r, 6 * r, 7 * r, '#f2f4ef');
+            rect(ctx, sx - 2 * r, sy - 14 * r, 4 * r, r, '#7f93a8');
+            rect(ctx, sx - 2 * r, sy - 12 * r, 3 * r, r, '#7f93a8');
           }
         },
       });
@@ -1601,17 +1922,24 @@ export class World {
     ctx.drawImage(room.front.canvas, this.offX, this.offY);
     // Nachbarhäuser vor dem Grundstück stehen auch vor dem Büro. Sie enden aber an seinem Umriss: Was darin geschieht, muss zu sehen sein.
     const edge = 0.3;
-    const height = WALL_H + 8;
-    const outline = [pen.pt(-edge, -edge, height), pen.pt(view.room.w + edge, -edge, height), pen.pt(view.room.w + edge, -edge), pen.pt(view.room.w + edge, view.room.d + edge), pen.pt(-edge, view.room.d + edge), pen.pt(-edge, view.room.d + edge, height)];
+    const top = WALL_H + 8;
+    const outline = [pen.pt(-edge, -edge, top), pen.pt(view.room.w + edge, -edge, top), pen.pt(view.room.w + edge, -edge), pen.pt(view.room.w + edge, view.room.d + edge), pen.pt(-edge, view.room.d + edge), pen.pt(-edge, view.room.d + edge, top)];
     ctx.save();
     ctx.beginPath();
     ctx.rect(0, 0, this.lowW, this.lowH);
     outline.forEach(([x, y], index) => (index ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
     ctx.closePath();
     ctx.clip('evenodd');
-    drawTownInFront(ctx, company, view.siteId, view.room.w, view.room.d, cornerX, cornerY, this.lowW, this.lowH);
+    if (this.cam === 0) this.townLayer(ctx, (t, x, y, w, h) => drawTownInFront(t, company, view.siteId, view.room.w, view.room.d, x, y, w, h), cornerX, cornerY);
     ctx.restore();
 
+    // Tageslicht: gleitet in etwa zwölf Sekunden von Tag zu Nacht.
+    const target = darkness(this.usage());
+    // Beim Öffnen steht die Tageszeit sofort da. Danach gleitet sie langsam, während man zusieht.
+    if (!this.darkSet || REDUCED_MOTION) this.dark = target;
+    else this.dark += Math.max(-dt / 12, Math.min(dt / 12, target - this.dark));
+    this.darkSet = true;
+    if (this.dark > 0.01) this.drawEvening(ctx, pen, company, busyDesks, time, this.dark);
     if (this.ghost) this.drawGhost(ctx, pen, this.ghost, tick);
 
     for (const agent of staffOf(company)) {
@@ -1632,15 +1960,15 @@ export class World {
       const chatting = actor.pause?.kind === 'plausch' && actor.pause.speaks && !actor.path.length && agent.live.kind === 'idle';
       const bubble: Bubble | null = speaking || chatting ? { icon: 'dots', color: '#1b2c46' } : bubbleFor(agent.live.kind);
       const seated = isSeated(actor);
-      const top = actor.lastScreen.y - (seated ? 27 : 33);
-      if (bubble) this.drawBubble(ctx, actor.lastScreen.x + 7, top - 2, bubble, tick);
-      this.placeLabel(agent, actor.lastScreen.x, top + (bubble ? -13 : 0));
+      const top = actor.lastScreen.y - (seated ? 27 : 33) * RES;
+      if (bubble) this.drawBubble(ctx, actor.lastScreen.x + 7 * RES, top - 2 * RES, bubble, tick);
+      this.placeLabel(agent, actor.lastScreen.x, top + (bubble ? -13 * RES : 0));
     }
 
     const running = (company.meetings ?? []).filter((m) => m.status === 'running');
     for (const meeting of running) {
       const room = company.placed.find((p) => p.id === meeting.roomId);
-      if (room && floorOf(room) === this.viewFloor) this.drawRoomGlow(ctx, pen, room, meeting);
+      if (room && floorOf(room) === this.viewFloor) this.drawRoomGlow(ctx, pen, xf.item(room), meeting);
     }
     for (const [id, el] of this.roomLabels) {
       if (running.some((m) => m.id === id)) continue;
@@ -1714,14 +2042,30 @@ export class World {
     el.style.transform = `translate(calc(${Math.round(x * this.scale)}px - 50%), calc(${Math.round(y * this.scale)}px - 100%))`;
   }
 
-  private addItem(items: { depth: number; draw: () => void }[], ctx: Ctx, pen: Pen, item: PlacedItem, active: boolean, tick: number): void {
+  /** item steht in Ansichtskoordinaten, source ist dasselbe Stück in der Welt. */
+  private addItem(items: { depth: number; draw: () => void }[], ctx: Ctx, pen: Pen, item: PlacedItem, active: boolean, tick: number, source: PlacedItem = item): void {
     const at = (): [number, number] => pen.pt(item.i, item.j);
     if (item.kind === 'meeting') {
-      this.addRoom(items, ctx, pen, item);
+      this.addRoom(items, ctx, pen, item, this.xf().tile(meetingDoor(source).inside));
       return;
     }
     if (item.kind === 'lift') {
-      this.addLift(items, pen, item);
+      this.addLift(items, pen, item, source);
+      return;
+    }
+    if (isWallHung(item.kind)) {
+      // Nur die Seite zur Kamera ist zu sehen, und nur an einer Wand, die gerade hoch steht.
+      if (item.rot >= 2 || !this.wallHigh(source)) return;
+      const variant = Math.abs(source.i * 7 + source.j * 3) % 3;
+      items.push({ depth: item.i + item.j + 0.6, draw: () => this.drawSprite(ctx, hungSprite(item.kind, item.rot, variant), at()) });
+      return;
+    }
+    if (item.kind === 'column') {
+      items.push({ depth: item.i + item.j + 1, draw: () => this.drawSprite(ctx, columnSprite(), at()) });
+      return;
+    }
+    if (item.kind === 'steps') {
+      items.push({ depth: item.i + item.j + 0.4, draw: () => this.drawSprite(ctx, stepsSprite(item.rot), at()) });
       return;
     }
     if (item.kind === 'stairs') {
@@ -1732,7 +2076,17 @@ export class World {
       return;
     }
     if (isEdgeKind(item.kind)) {
-      const sprite = edgeSprite(item.kind, item.rot, this.wallsLow, wallColor(item.color));
+      const side = this.xf().edgeSide(source);
+      const paint = wallColor(side === 'front' ? source.color : (source.colorBack ?? source.color));
+      // Was auf der vorderen Außenkante der Ansicht steht, ist aufgeschnitten wie die Außenwand.
+      const xf = this.xf();
+      const outer = item.rot % 2 === 0 ? item.j >= xf.d : item.i >= xf.w;
+      // Im Schnitt stehen Innenwände durchscheinend in voller Höhe, ganz unten bleiben nur Sockel.
+      const cut = this.wallMode === 'cut' && !isLowEdge(item.kind) && item.kind !== 'glass';
+      const sprite = outer || this.wallMode === 'down' ? lowEdgeSprite(item.kind, item.rot, paint)
+        : this.wallHigh(source) ? edgeSprite(item.kind, item.rot, false, paint)
+        : cut ? cutEdgeSprite(item.kind, item.rot, paint)
+        : lowEdgeSprite(item.kind, item.rot, paint);
       items.push({ depth: item.i + item.j + 0.5, draw: () => this.drawSprite(ctx, sprite, at()) });
       return;
     }
@@ -1774,7 +2128,7 @@ export class World {
         }
         this.drawSprite(ctx, deskTable(item.rot), at());
         const [x, y] = at();
-        drawScreen(new Pen(ctx, x, y), item.rot, active, tick);
+        drawScreen(new Pen(ctx, x, y, RES), item.rot, active, tick);
       },
     });
     items.push({ depth: depth - 0.05, draw: () => this.drawSprite(ctx, chairBase(item.rot), at()) });
@@ -1782,10 +2136,13 @@ export class World {
   }
 
   /** Erst Schacht und Kabine, dann die Figur, dann die Türflügel: So schliesst sich die Tür vor ihr. */
-  private addLift(items: { depth: number; draw: () => void }[], pen: Pen, item: PlacedItem): void {
+  private addLift(items: { depth: number; draw: () => void }[], pen: Pen, item: PlacedItem, source: PlacedItem = item): void {
     const building = buildingAt(this.company!.town, this.company!.town.siteId);
-    const shaft = building.shafts.find((s) => s.kind === 'lift' && s.i === item.i && s.j === item.j);
-    const side = shaft ? this.liftSide(shaft) : null;
+    const shaft = building.shafts.find((s) => s.kind === 'lift' && s.i === source.i && s.j === source.j);
+    const worldSide = shaft ? this.liftSide(shaft) : null;
+    // Die Tür ist nur zu sehen, wenn sie zur Kamera zeigt.
+    const turned = worldSide === null ? null : this.xf().dir(worldSide === 'i' ? 0 : 1);
+    const side: LiftFace | null = turned === 0 ? 'i' : turned === 1 ? 'j' : null;
     const lift = shaft ? this.liftOf(shaft) : null;
     const floor = floorOf(item);
     items.push({
@@ -1804,9 +2161,9 @@ export class World {
   }
 
   /** Jedes Wandstück wird einzeln einsortiert. So steht eine Figur je nach Standort vor oder hinter dem Glas. */
-  private addRoom(items: { depth: number; draw: () => void }[], ctx: Ctx, pen: Pen, item: Pick<PlacedItem, 'i' | 'j' | 'rot'>): void {
+  private addRoom(items: { depth: number; draw: () => void }[], ctx: Ctx, pen: Pen, item: Pick<PlacedItem, 'i' | 'j' | 'rot'>, doorTile?: Tile): void {
     const { i, j } = item;
-    const door = meetingDoor(item).inside;
+    const door = doorTile ?? meetingDoor(item).inside;
     const isDoor = (a: Tile, side: 'i+' | 'i-' | 'j+' | 'j-') =>
       a.i === door.i && a.j === door.j && ((side === 'i+' && item.rot === 0) || (side === 'j+' && item.rot === 1) || (side === 'i-' && item.rot === 2) || (side === 'j-' && item.rot === 3));
     items.push({ depth: i + j - 0.5, draw: () => this.drawSprite(ctx, meetingFloor(), pen.pt(i, j)) });
@@ -1826,11 +2183,13 @@ export class World {
   }
 
   private drawSelection(ctx: Ctx, pen: Pen, actor: Actor): void {
-    const [sx, sy] = pen.pt(actor.i, actor.j);
-    line(ctx, sx - 9, sy, sx, sy - 4, '#5eeac0');
-    line(ctx, sx, sy - 4, sx + 9, sy, '#5eeac0');
-    line(ctx, sx + 9, sy, sx, sy + 4, '#5eeac0');
-    line(ctx, sx, sy + 4, sx - 9, sy, '#5eeac0');
+    const [vi, vj] = this.xf().pt(actor.i, actor.j);
+    const [sx, sy] = pen.pt(vi, vj, this.pointZ(actor.i, actor.j));
+    const r = RES;
+    line(ctx, sx - 9 * r, sy, sx, sy - 4 * r, '#5eeac0');
+    line(ctx, sx, sy - 4 * r, sx + 9 * r, sy, '#5eeac0');
+    line(ctx, sx + 9 * r, sy, sx, sy + 4 * r, '#5eeac0');
+    line(ctx, sx, sy + 4 * r, sx - 9 * r, sy, '#5eeac0');
   }
 
   private groundOfView() {
@@ -1858,6 +2217,15 @@ export class World {
   }
 
   private drawBubble(ctx: Ctx, x: number, y: number, bubble: Bubble, tick: number): void {
+    // Die Sprechblase ist in alten Pixeln gezeichnet und wird RES-fach vergrößert.
+    ctx.save();
+    ctx.translate(Math.round(x), Math.round(y));
+    ctx.scale(RES, RES);
+    this.drawBubbleAt(ctx, 0, 0, bubble, tick);
+    ctx.restore();
+  }
+
+  private drawBubbleAt(ctx: Ctx, x: number, y: number, bubble: Bubble, tick: number): void {
     const size = 13;
     const left = Math.round(x);
     const top = Math.round(y - size);
@@ -1893,7 +2261,12 @@ export class World {
   private drawRoomZones(ctx: Ctx, pen: Pen, company: Company): void {
     const zones = (company.zones ?? []).filter((z) => floorOf(z) === this.viewFloor);
     for (const zone of zones) {
-      const tiles = [...zoneTiles(company, zone)].map((k) => k.split(',').map(Number) as [number, number]);
+      const xf = this.xf();
+      const tiles = [...zoneTiles(company, zone)].map((k) => {
+        const [i, j] = k.split(',').map(Number);
+        const v = xf.tile({ i, j });
+        return [v.i, v.j] as [number, number];
+      });
       if (zone.floorStyle) this.paintFloor(ctx, pen, tiles, zone.floorStyle);
       this.tintTiles(ctx, pen, tiles, ZONE_COLORS[zone.kind], zone.floorStyle ? 0.06 : 0.14);
       const top = tiles.reduce((a, b) => (b[0] + b[1] < a[0] + a[1] ? b : a), tiles[0]);
@@ -1929,6 +2302,33 @@ export class World {
       } else if (style === 'fliesen') {
         quad(i, j, 1, 1, '#b9c2c8');
         quad(i + 0.04, j + 0.04, 0.92, 0.92, (i + j) % 2 ? '#d6dde2' : '#e6ebef');
+      } else if (style === 'parkett') {
+        // Fischgrät in zwei Richtungen, Feld um Feld versetzt.
+        for (let n = 0; n < 2; n++) {
+          for (let m = 0; m < 2; m++) {
+            const turn = (n + m + i + j) % 2 === 0;
+            const shade = (i * 3 + j * 5 + n * 2 + m) % 3;
+            const c = ['#9b6b3f', '#ad7a4b', '#8c5f37'][shade];
+            if (turn) {
+              quad(i + n / 2, j + m / 2, 0.5, 0.25, c);
+              quad(i + n / 2, j + m / 2 + 0.25, 0.5, 0.25, darken(c, 0.06));
+            } else {
+              quad(i + n / 2, j + m / 2, 0.25, 0.5, c);
+              quad(i + n / 2 + 0.25, j + m / 2, 0.25, 0.5, darken(c, 0.06));
+            }
+          }
+        }
+      } else if (style === 'marmor') {
+        quad(i, j, 1, 1, '#d8d4cc');
+        quad(i + 0.03, j + 0.03, 0.94, 0.94, (i + j) % 2 ? '#ece8e0' : '#e2ddd3');
+        const vein = (i * 13 + j * 7) % 4;
+        quad(i + 0.15 + vein * 0.12, j + 0.2, 0.08, 0.5, '#c7c1b5');
+      } else if (style === 'teppichRot') {
+        quad(i, j, 1, 1, '#8c2f35');
+        if ((i * 3 + j) % 4 === 0) quad(i + 0.4, j + 0.4, 0.2, 0.2, '#a33c42');
+      } else if (style === 'linoleum') {
+        quad(i, j, 1, 1, '#7fa58a');
+        if ((i + j) % 3 === 0) quad(i + 0.2, j + 0.55, 0.3, 0.06, '#8fb59a');
       } else {
         quad(i, j, 1, 1, (i * 7 + j * 3) % 5 === 0 ? '#7a7d80' : '#85888b');
       }
@@ -1942,7 +2342,43 @@ export class World {
     ctx.restore();
   }
 
+  /**
+   * Ob eine Wand gerade hoch steht. Im Schnitt gehen alle Innenwände herunter, damit man in jeden Raum
+   * sieht. Glaswände bleiben stehen, durch sie sieht man ohnehin.
+   */
+  private wallHigh(edge: Pick<PlacedItem, 'kind' | 'i' | 'j' | 'rot'>): boolean {
+    // Halbwand und Geländer sind ohnehin niedrig. Sie bleiben immer stehen.
+    if (isLowEdge(edge.kind)) return true;
+    if (this.wallMode === 'down') return false;
+    if (this.wallMode === 'up') return true;
+    if (edge.kind === 'glass') return true;
+    // Wanddeko hängt an einer Wand und zeigt sich, wo die Wand steht. An den hinteren Außenwänden immer.
+    if (isWallHung(edge.kind)) {
+      const v = this.xf().edge(edge);
+      return v.rot === 0 ? v.j === 0 : v.i === 0;
+    }
+    return false;
+  }
+
   private drawGhost(ctx: Ctx, pen: Pen, ghost: Ghost, tick: number): void {
+    const xf = this.xf();
+    const viewTiles = (tiles: string[]) => tiles.map((k) => {
+      const [i, j] = k.split(',').map(Number);
+      const v = xf.tile({ i, j });
+      return [v.i, v.j] as [number, number];
+    });
+    const strip = (e: WallEdge) => {
+      const { i, j } = e;
+      return e.rot % 2 === 0
+        ? [pen.pt(i, j - 0.1), pen.pt(i + 1, j - 0.1), pen.pt(i + 1, j + 0.1), pen.pt(i, j + 0.1)]
+        : [pen.pt(i - 0.1, j), pen.pt(i - 0.1, j + 1), pen.pt(i + 0.1, j + 1), pen.pt(i + 0.1, j)];
+    };
+    if (ghost.kind === 'floor') {
+      const tiles = viewTiles(ghost.tiles);
+      if (ghost.style) this.paintFloor(ctx, pen, tiles, ghost.style);
+      this.tintTiles(ctx, pen, tiles, ghost.style ? '#5eeac0' : '#f8b62d', 0.18 + (tick % 6 < 3 ? 0.06 : 0));
+      return;
+    }
     if (ghost.kind === 'roomwalls') {
       // Jede Kante innerhalb des Büros wird zur Wand. Kanten am Rand des Gebäudes bleiben, wie sie sind.
       const loc = this.location();
@@ -1952,82 +2388,86 @@ export class World {
       for (const edge of rectWalls(ghost)) {
         const [a, b] = wallSides(edge);
         if (!inside(a) || !inside(b)) continue;
-        const { i, j } = edge;
-        const strip = edge.rot === 0
-          ? [pen.pt(i, j - 0.1), pen.pt(i + 1, j - 0.1), pen.pt(i + 1, j + 0.1), pen.pt(i, j + 0.1)]
-          : [pen.pt(i - 0.1, j), pen.pt(i - 0.1, j + 1), pen.pt(i + 0.1, j + 1), pen.pt(i + 0.1, j)];
-        fillPoly(ctx, strip, '#5eeac0');
-        this.drawSprite(ctx, edgeSprite('wall', edge.rot, this.wallsLow), pen.pt(i, j));
+        const v = xf.edge(edge);
+        fillPoly(ctx, strip(v), '#5eeac0');
+        this.drawSprite(ctx, edgeSprite('wall', v.rot, this.wallsLow), pen.pt(v.i, v.j));
       }
       ctx.restore();
       return;
     }
     if (ghost.kind === 'room') {
-      const tiles = ghost.tiles.map((k) => k.split(',').map(Number) as [number, number]);
-      this.tintTiles(ctx, pen, tiles, ghost.ok ? '#5eeac0' : '#e5534b', 0.28 + (tick % 6 < 3 ? 0.06 : 0));
+      this.tintTiles(ctx, pen, viewTiles(ghost.tiles), ghost.ok ? '#5eeac0' : '#e5534b', 0.28 + (tick % 6 < 3 ? 0.06 : 0));
       return;
     }
     if (ghost.kind === 'zone') {
       const ok = checkDepartment(this.location(), this.company!.departments.filter((d) => floorOf(d) === this.viewFloor), ghost).ok;
-      this.drawZone(ctx, pen, ghost, ok ? '#5eeac0' : '#e5534b', 0.3 + (tick % 6 < 3 ? 0.06 : 0), true);
+      this.drawZone(ctx, pen, xf.rect(ghost), ok ? '#5eeac0' : '#e5534b', 0.3 + (tick % 6 < 3 ? 0.06 : 0), true);
       return;
     }
     const check = isShaft(ghost.kind) && !ghost.id
       ? checkShaft(this.company!, { kind: ghost.kind, i: ghost.i, j: ghost.j, rot: ghost.rot })
       : checkPlacement(this.location(), itemsOnFloor(this.company!.placed, this.viewFloor), ghost);
-    const size = footprint(ghost.kind, ghost.rot);
+    const vg = xf.item(ghost);
+    const size = footprint(vg.kind, vg.rot);
     const color = check.ok ? '#5eeac0' : '#e5534b';
+    const z = this.itemZ(ghost);
+    if (z) pen = pen.lifted(z);
     ctx.save();
     ctx.globalAlpha = 0.34;
-    fillPoly(ctx, [pen.pt(ghost.i, ghost.j), pen.pt(ghost.i + size.w, ghost.j), pen.pt(ghost.i + size.w, ghost.j + size.d), pen.pt(ghost.i, ghost.j + size.d)], color);
+    fillPoly(ctx, [pen.pt(vg.i, vg.j), pen.pt(vg.i + size.w, vg.j), pen.pt(vg.i + size.w, vg.j + size.d), pen.pt(vg.i, vg.j + size.d)], color);
     ctx.globalAlpha = 0.72 + (tick % 6 < 3 ? 0.08 : 0);
-    const at = pen.pt(ghost.i, ghost.j);
+    const at = pen.pt(vg.i, vg.j);
     if (ghost.kind === 'arcade' || ghost.kind === 'beanbag') {
       this.drawSprite(ctx, ghost.kind === 'arcade' ? arcadeSprite() : beanbagSprite(), at);
+    } else if (ghost.kind === 'column') {
+      this.drawSprite(ctx, columnSprite(), at);
+    } else if (ghost.kind === 'steps') {
+      this.drawSprite(ctx, stepsSprite(vg.rot), at);
+    } else if (isWallHung(ghost.kind)) {
+      fillPoly(ctx, strip(vg), color);
+      if (vg.rot < 2) this.drawSprite(ctx, hungSprite(ghost.kind, vg.rot), at);
     } else if (ghost.kind === 'board') {
-      this.drawSprite(ctx, boardSprite(ghost.rot), at);
+      this.drawSprite(ctx, boardSprite(vg.rot), at);
     } else if (ghost.kind === 'table') {
-      this.drawSprite(ctx, meetingTable(), pen.pt(ghost.i - 1, ghost.j - 1));
+      this.drawSprite(ctx, meetingTable(), pen.pt(vg.i - 1, vg.j - 1));
     } else if (isEdgeKind(ghost.kind)) {
       // Jede Kante des Zugs leuchtet. Liegt schon eine Wand dort, zeigt Bernstein: Ein Klick reißt sie ab.
       const placed = itemsOnFloor(this.company!.placed, this.viewFloor);
       const run = ghost.run ?? [{ i: ghost.i, j: ghost.j, rot: ghost.rot }];
-      const removing = !ghost.id && run.length === 1 && placed.some((p) => p.kind === ghost.kind && p.i === ghost.i && p.j === ghost.j && p.rot % 2 === ghost.rot % 2);
+      const standing = (seg: WallEdge) => placed.some((p) => p.kind === ghost.kind && p.i === seg.i && p.j === seg.j && p.rot % 2 === seg.rot % 2);
+      const removing = !ghost.id && (ghost.removing ?? (run.length === 1 && standing(run[0])));
       for (const seg of run) {
-        const { i, j } = seg;
-        const strip = seg.rot % 2 === 0
-          ? [pen.pt(i, j - 0.1), pen.pt(i + 1, j - 0.1), pen.pt(i + 1, j + 0.1), pen.pt(i, j + 0.1)]
-          : [pen.pt(i - 0.1, j), pen.pt(i - 0.1, j + 1), pen.pt(i + 0.1, j + 1), pen.pt(i + 0.1, j)];
-        fillPoly(ctx, strip, removing ? '#f8b62d' : color);
-        if (!removing) this.drawSprite(ctx, edgeSprite(ghost.kind, seg.rot), pen.pt(i, j));
+        const v = xf.edge(seg);
+        fillPoly(ctx, strip(v), removing ? '#f8b62d' : color);
+        if (!removing && !standing(seg)) this.drawSprite(ctx, edgeSprite(ghost.kind, v.rot, this.wallMode !== 'up'), pen.pt(v.i, v.j));
       }
     } else if (ghost.kind === 'meeting') {
       const parts: { depth: number; draw: () => void }[] = [];
-      this.addRoom(parts, ctx, pen, ghost);
+      this.addRoom(parts, ctx, pen, vg, xf.tile(meetingDoor(ghost).inside));
       parts.sort((a, b) => a.depth - b.depth).forEach((part) => part.draw());
     } else if (isProp(ghost.kind)) {
-      this.drawSprite(ctx, propSprite({ kind: ghost.kind as PropKind, rot: ghost.rot }), at);
+      this.drawSprite(ctx, propSprite({ kind: ghost.kind as PropKind, rot: vg.rot }), at);
       if (isShaft(ghost.kind) && !ghost.id) {
         // Das Feld davor bleibt frei. Hier kommen die Figuren an.
-        const t = shaftLanding(ghost.kind, ghost.i, ghost.j, ghost.rot);
+        const t = xf.tile(shaftLanding(ghost.kind, ghost.i, ghost.j, ghost.rot));
         fillPoly(ctx, [pen.pt(t.i, t.j), pen.pt(t.i + 1, t.j), pen.pt(t.i + 1, t.j + 1), pen.pt(t.i, t.j + 1)], '#f8b62d');
       }
     } else if (ghost.kind === 'desk' || ghost.kind === 'ceoDesk') {
-      this.drawSprite(ctx, chairBase(ghost.rot), at);
-      this.drawSprite(ctx, chairBack(ghost.rot), at);
-      this.drawSprite(ctx, ghost.kind === 'ceoDesk' ? ceoTable(ghost.rot) : deskTable(ghost.rot), at);
+      this.drawSprite(ctx, chairBase(vg.rot), at);
+      this.drawSprite(ctx, chairBack(vg.rot), at);
+      this.drawSprite(ctx, ghost.kind === 'ceoDesk' ? ceoTable(vg.rot) : deskTable(vg.rot), at);
     } else {
-      this.drawSprite(ctx, furnitureSprite(ghost.kind as 'shelf', ghost.i + ghost.j, ghost.rot), at);
+      this.drawSprite(ctx, furnitureSprite(ghost.kind as 'shelf', ghost.i + ghost.j, vg.rot), at);
     }
     ctx.restore();
-    const corners = [pen.pt(ghost.i, ghost.j), pen.pt(ghost.i + size.w, ghost.j), pen.pt(ghost.i + size.w, ghost.j + size.d), pen.pt(ghost.i, ghost.j + size.d)];
+    const corners = [pen.pt(vg.i, vg.j), pen.pt(vg.i + size.w, vg.j), pen.pt(vg.i + size.w, vg.j + size.d), pen.pt(vg.i, vg.j + size.d)];
     for (let n = 0; n < 4; n++) {
       const [ax, ay] = corners[n];
       const [bx, by] = corners[(n + 1) % 4];
       line(ctx, ax, ay, bx, by, color);
     }
     if (!check.ok) {
-      const [cx, cy] = pen.pt(ghost.i + size.w / 2, ghost.j + size.d / 2);
+      const [cx, cy] = pen.pt(vg.i + size.w / 2, vg.j + size.d / 2);
       line(ctx, cx - 4, cy - 2, cx + 4, cy + 2, color);
       line(ctx, cx - 4, cy + 2, cx + 4, cy - 2, color);
     }
@@ -2071,7 +2511,7 @@ export function roomPreview(locationId: Company['locationId']): HTMLCanvasElemen
   const water = waterPattern();
   for (let y = 0; y < room.height; y += 128) for (let x = 0; x < room.width; x += 128) out.ctx.drawImage(water.canvas, x, y);
   out.ctx.drawImage(room.base.canvas, 0, 0);
-  const pen = new Pen(out.ctx, room.pen.ox, room.pen.oy);
+  const pen = new Pen(out.ctx, room.pen.ox, room.pen.oy, RES);
   const stack: { depth: number; draw: () => void }[] = [];
   for (const prop of loc.props) {
     stack.push({

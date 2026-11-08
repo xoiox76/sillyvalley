@@ -4,9 +4,27 @@
     {
       "name": "sillyvalley",
       "runtimeExecutable": "node",
-      "runtimeArgs": ["server/main.ts"],
+      "runtimeArgs": [
+        "server/main.ts"
+      ],
       "port": 4600,
-      "env": { "SILLYVALLEY_BAUPUNKTE": "unendlich" }
+      "env": {
+        "SILLYVALLEY_BAUPUNKTE": "unendlich"
+      }
+    },
+    {
+      "name": "sillyvalley-bautest",
+      "runtimeExecutable": "node",
+      "runtimeArgs": [
+        "server/main.ts"
+      ],
+      "port": 4610,
+      "env": {
+        "PORT": "4610",
+        "SILLYVALLEY_BAUPUNKTE": "unendlich",
+        "SILLYVALLEY_DATA": "/tmp/sillyvalley-bautest",
+        "SILLYVALLEY_AGENT_BIN": "./test/fake-agent.mjs"
+      }
     }
   ]
 }

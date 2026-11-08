@@ -14,8 +14,9 @@ Unlike traditional management sims, your employees are **real AI agents**. Give 
   * Start small in your childhood bedroom or a cramped garage.
   * Outgrow your space and move into the city of **Silly Valley**.
   * Rent trendy co-working spaces or buy land to custom-build your dream startup headquarters.
-* 🎨 **Custom Office Building:** Customize every room, place retro furniture, optimize layout efficiency, and create the ideal environment for your AI team.
-* 🕹️ **Nostalgic Pixel Art Aesthetic:** A cozy, detailed pixel-art visual style inspired by classic management and simulation games.
+* 🎨 **Custom Office Building:** Drag walls, half walls and railings, set doors and windows into walls, lay floors tile by tile, raise platforms with steps, hang pictures and lamps, paint each wall side, rotate the camera and switch walls up, cut away or down.
+* 🌆 **Day and Night from Your Usage:** The office light follows how much of your AI allowance is used, from broad daylight to night. At night your agents leave the office and walk or drive home to their own houses in town.
+* 🕹️ **Detailed Pixel Art:** A cozy, detailed pixel-art style at 64 × 32 pixels per tile, with shaded furniture, characters and evening lights.
 
 ---
 

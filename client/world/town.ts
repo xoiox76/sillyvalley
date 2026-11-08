@@ -9,6 +9,8 @@ import type { Company } from '../../shared/types.ts';
 import { WorldMap } from './worldmap.ts';
 import { isGeneric, lotLook, setCitySalts, styleOf, type BuildingStyle, type Fence, type Ground, type RoofStyle } from './styles.ts';
 import { characterSprite, type Pose, type View } from './characters.ts';
+import * as commute from './commute.ts';
+import type { TownSprite } from './commute.ts';
 import { Pen, darken, fillPoly, hash2, layer, lighten, line, rect, seeded, tri, type Ctx, type Layer } from './pixel.ts';
 
 const SPEED = 10;
@@ -406,9 +408,27 @@ export class TownView {
       const p = part.solid ?? part;
       return this.x < p.i + p.w && this.y < p.j + p.d;
     };
-    for (const part of parts) if (!inFront(part)) part.draw();
+    // Heimwege der Mitarbeiter: zwischen die Häuser einsortiert, nach Tiefe.
+    commute.sync(this.company!, time);
+    const project = (i: number, j: number): [number, number] => [originX() + (i - j) * 16 + this.camX, TOP + (i + j) * 8 + this.camY];
+    const sprites = commute.townSprites(time);
+    let next = 0;
+    const flushUntil = (depth: number) => {
+      while (next < sprites.length && sprites[next].depth <= depth) sprites[next++].draw(ctx, project, time);
+    };
+    for (const part of parts) {
+      if (inFront(part)) continue;
+      flushUntil(part.i + part.j);
+      part.draw();
+    }
+    flushUntil(this.x + this.y);
     this.drawPlayer(ctx, screenX + this.camX, screenY + this.camY, time);
-    for (const part of parts) if (inFront(part)) part.draw();
+    for (const part of parts) {
+      if (!inFront(part)) continue;
+      flushUntil(part.i + part.j);
+      part.draw();
+    }
+    flushUntil(Infinity);
     this.drawSignPosts(ctx);
     this.placeLabels(screenX + this.camX, screenY + this.camY);
   }
@@ -598,7 +618,7 @@ function cameraAround(site: Parcel, roomW: number, roomD: number, sx: number, sy
 const standsInFront = (site: Parcel, part: Part) => part.i >= site.i + site.w || part.j >= site.j + site.d;
 
 /** Die Stadt rund ums Büro, Feld für Feld in derselben Grösse wie das Büro. Das eigene Haus fehlt: An seiner Stelle steht der Raum. */
-export function drawTownBehind(ctx: Ctx, company: Company, siteId: string, roomW: number, roomD: number, doorI: number, sx: number, sy: number, viewW: number, viewH: number): boolean {
+export function drawTownBehind(ctx: Ctx, company: Company, siteId: string, roomW: number, roomD: number, doorI: number, sx: number, sy: number, viewW: number, viewH: number, extras: TownSprite[] = []): boolean {
   const site = parcelById(siteId);
   if (!site) return false;
   const { box, camX, camY } = cameraAround(site, roomW, roomD, sx, sy);
@@ -608,6 +628,10 @@ export function drawTownBehind(ctx: Ctx, company: Company, siteId: string, roomW
   const key = `${siteId}:${roomW}x${roomD}:${doorI}`;
   if (plotCache?.key !== key) plotCache = { key, plot: paintPlot(site, box, roomW, roomD, doorI) };
   ctx.drawImage(plotCache.plot.image.canvas, sx - plotCache.plot.ox, sy - plotCache.plot.oy);
+  // Heimwege: Autos und Fußgänger auf Straße und Gehweg. Was davor steht, zeichnet drawTownInFront darüber.
+  const project = (i: number, j: number): [number, number] => [originX() + (i - j) * 16 + camX, TOP + (i + j) * 8 + camY];
+  const time = performance.now();
+  for (const sprite of extras) sprite.draw(ctx, project, time);
   return true;
 }
 

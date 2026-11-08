@@ -487,6 +487,16 @@ async function route(engine: Engine, req: IncomingMessage, res: ServerResponse, 
     }
   }
 
+  if (section === 'floorpaint' && parts.length === 3 && method === 'POST') {
+    engine.paintFloor(id, await readJson(req));
+    return sendJson(res, 200, {});
+  }
+
+  if (section === 'levels' && parts.length === 3 && method === 'POST') {
+    engine.setLevel(id, await readJson(req));
+    return sendJson(res, 200, {});
+  }
+
   if (section === 'files' && method === 'GET') return sendJson(res, 200, engine.files(id));
   if (section === 'file' && method === 'GET') {
     return serveFile(res, engine.resolvePath(id, url.searchParams.get('path') ?? ''), url.searchParams.has('download'));

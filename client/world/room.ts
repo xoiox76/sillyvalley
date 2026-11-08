@@ -3,8 +3,8 @@
 
 import type { LocationInfo } from '../../shared/catalog.ts';
 import type { LocationId } from '../../shared/types.ts';
-import { Pen, darken, fillPoly, hash2, layer, lighten, line, rect, seeded, tri, type Layer, type Faces } from './pixel.ts';
-import { INK } from './art.ts';
+import { Pen, darken, fillPoly, fillPolyFn, hash2, layer, lighten, line, mix, rect, seeded, tri, type Ctx, type Layer, type Faces } from './pixel.ts';
+import { INK, RES } from './art.ts';
 
 export const WALL_H = 56;
 const FRONT_H = 12;
@@ -21,12 +21,29 @@ export interface Room {
   board: { u: number; v: number; w: number; h: number };
   /** Wo man hinausgeht. u in Pixel entlang der Wand. Die Welt prüft darauf Klicks. */
   doors: { face: 'J' | 'I'; j: number; u: number; w: number; h: number }[];
+  /** Feste Lichter im Raum, in Pixeln der Raumebene. Die Welt legt ihren Schein darüber. */
+  lights: RoomLight[];
+  /** Abendstimmung: Der Raum ist gedämpft, Lampen und Bildschirme leuchten. */
+  evening: boolean;
+}
+
+export interface RoomLight {
+  x: number;
+  y: number;
+  r: number;
+  color: string;
+  strength: number;
+  /** Ein Lämpchen: Es bekommt einen kleinen hellen Kern. */
+  bulb?: boolean;
 }
 
 interface Theme {
   floor: (i: number, j: number) => string;
-  wallRight: (u: number, v: number) => string;
-  wallLeft: (u: number, v: number) => string;
+  /** u, v in alten Pixeln, fu, fv in feinen. */
+  wallRight: (u: number, v: number, fu?: number, fv?: number) => string;
+  wallLeft: (u: number, v: number, fu?: number, fv?: number) => string;
+  /** Fein aufgelöster Boden: Farbe für einen Punkt (i, j) in Feldern, x, y in Bildpixeln. Ohne ihn gilt floor. */
+  floorFine?: (i: number, j: number, x: number, y: number) => string;
   pillar: string;
   cap: string;
   frontFace: string;
@@ -98,6 +115,39 @@ function newBuild(right: string, left: string): Theme {
   };
 }
 
+/* ---------- Fein aufgelöste Muster: Backstein und Dielen ---------- */
+
+const ramp = (cs: string[]) => (t: number) => cs[Math.max(0, Math.min(cs.length - 1, Math.round(t * (cs.length - 1))))];
+const BRICK = ramp(['#4a1e14', '#6a2c1c', '#8a3c26', '#a85234', '#c46a46']);
+const MORTAR = ['#2a2420', '#3a332d', '#4c443c'];
+const PLANK = ramp(['#2a160c', '#3f2414', '#55331d', '#6d4429', '#8a5a36']);
+const SKIRT = ['#3a2212', '#55321b', '#734626', '#b07644'];
+
+/** Backstein in feinen Pixeln: Steine 12 × 5, versetzt, oben heller, unten dunkler, einzelne Steine abweichend. */
+function fineBrick(u: number, v: number, dark: boolean): string {
+  if (v < 6 * RES) return v === 6 * RES - 1 ? SKIRT[3] : v >= 6 * RES - 3 ? SKIRT[2] : SKIRT[dark ? 0 : 1];
+  const w = v - 6 * RES;
+  const row = Math.floor(w / 5);
+  const inRow = w % 5;
+  const off = row % 2 ? 6 : 0;
+  const col = Math.floor((u + off) / 12);
+  const inCol = (u + off) % 12;
+  if (inRow === 4 || inCol === 11) return MORTAR[dark ? 0 : 1];
+  const t = 0.5 + (hash2(col, row) - 0.5) * 0.55 + (inRow === 0 ? 0.2 : 0) + (inCol === 0 ? 0.12 : 0) - (inRow === 3 ? 0.15 : 0) - (dark ? 0.22 : 0);
+  return BRICK(t + (hash2(u, v) > 0.93 ? -0.18 : 0));
+}
+
+/** Dunkle Dielen mit Fugen, Maserung und Astlöchern. i, j in Feldern. */
+function darkPlanks(i: number, j: number, x: number, y: number): string {
+  const row = Math.floor(i * 4.5);
+  const along = j + hash2(row, 3) * 3;
+  if (frac(i * 4.5) < 0.07 || frac(along * 0.7) < 0.012) return PLANK(0);
+  const grain = Math.sin(along * 30 + Math.sin(along * 2.6 + row) * 2.2 + hash2(row, 1) * 9);
+  const knot = hash2(row, Math.floor(along * 4)) > 0.985 && Math.abs(frac(along * 4) - 0.5) < 0.12;
+  if (knot) return PLANK(0);
+  return PLANK(0.5 + (hash2(row, Math.floor(along * 0.7)) - 0.5) * 0.4 + (grain > 0.8 ? -0.25 : 0) + (hash2(x, y) > 0.95 ? 0.25 : 0));
+}
+
 /** Backstein mit Fugen, versetzt je Reihe. */
 const brick = (u: number, v: number, base: string, joint: string) => {
   const row = Math.floor(v / 5);
@@ -131,11 +181,13 @@ const THEMES: Record<LocationId, Theme> = {
   },
   kinderzimmer: {
     floor: woodFloor,
-    wallRight: (u, v) => skirting(v, '#d6d2c6') ?? (v === 4 ? '#8a9aa3' : (Math.floor(u / 12) % 2 ? '#7f9aa8' : '#7692a1')),
-    wallLeft: (u, v) => skirting(v, '#bcb8ad') ?? (v === 4 ? '#6f7f88' : (Math.floor(u / 12) % 2 ? '#6c8795' : '#648090')),
-    pillar: '#8a6443',
-    cap: '#d3cfc4',
-    frontFace: '#a8a397',
+    // Dunkle Dielen und offener Backstein, wie ein Zimmer unterm Dach am Abend.
+    floorFine: (i, j, x, y) => darkPlanks(i, j, x, y),
+    wallRight: (u, v, fu = u * RES, fv = v * RES) => fineBrick(fu, fv, false),
+    wallLeft: (u, v, fu = u * RES, fv = v * RES) => fineBrick(fu, fv, true),
+    pillar: '#4a2a1c',
+    cap: '#2a1a14',
+    frontFace: '#5a3424',
     board: { u: 40, v: 24, w: 32, h: 20 },
   },
   garage: {
@@ -284,23 +336,122 @@ function sunlight(id: LocationId, i: number, j: number): number {
   return 0;
 }
 
+/* ---------- Kinderzimmer: Fenster mit Nachtstadt, Lichterkette, Poster ---------- */
+
+/** Ein feines Pixel auf der linken (I, längs j) oder rechten (J, längs i) Rückwand. u, v in feinen Pixeln. */
+function wallDot(ctx: Ctx, ox: number, oy: number, face: 'I' | 'J', u: number, v: number, color: string): void {
+  const x = face === 'J' ? ox + u : ox - u - 1;
+  rect(ctx, x, oy + Math.floor(u / 2) - v - 1, 1, 1, color);
+}
+
+const GLYPH: Record<string, string> = { D: '110101101101110', E: '111100110100111', P: '110101110100100', L: '100100100100111', O: '010101101101010', Y: '101101010010010', S: '011100010001110', H: '101101111101101', I: '111010010010111', T: '111010010010010', '!': '010010010000010', ' ': '000000000000000' };
+
+function wallText(ctx: Ctx, ox: number, oy: number, face: 'I' | 'J', u: number, v: number, text: string, color: string): void {
+  let at = 0;
+  for (const ch of text) {
+    const g = GLYPH[ch] ?? GLYPH[' '];
+    for (let r = 0; r < 5; r++) for (let q = 0; q < 3; q++) if (g[r * 3 + q] === '1') wallDot(ctx, ox, oy, face, u + at + q, v - r, color);
+    at += 4;
+  }
+}
+
+function kidsRoomDecor(ctx: Ctx, ox: number, oy: number): RoomLight[] {
+  const lights: RoomLight[] = [];
+  const dot = (face: 'I' | 'J', u: number, v: number, c: string) => wallDot(ctx, ox, oy, face, u, v, c);
+  // Fenster in der linken Wand: Rahmen, Sprossen, Nachthimmel, Hochhäuser mit hellen Fenstern, Sterne, Spiegelung
+  const W0 = { u: 118, v: 42, w: 52, h: 46 };
+  for (let u = -3; u < W0.w + 3; u++) {
+    for (let v = -3; v < W0.h + 3; v++) {
+      const inside = u >= 0 && v >= 0 && u < W0.w && v < W0.h;
+      if (!inside) {
+        dot('I', W0.u + u, W0.v + v, v < 0 ? '#b0b4ba' : '#e2e4e7');
+        continue;
+      }
+      const frame = u < 2 || v < 2 || u >= W0.w - 2 || v >= W0.h - 2 || Math.abs(u - W0.w / 2) < 1 || v === Math.floor(W0.h * 0.62);
+      if (frame) {
+        dot('I', W0.u + u, W0.v + v, u < 1 ? '#cdd0d4' : '#eceef1');
+        continue;
+      }
+      // Tagsüber: Himmel und Hochhäuser. Abends färbt das Licht der Welt alles ein.
+      const b = Math.floor(u / 6);
+      const bh = 10 + hash2(b, 2) * 20;
+      let c = mix('#8fc4e8', '#d8eefa', v / W0.h);
+      if (v < bh) {
+        c = hash2(b, 5) > 0.5 ? '#8a96a8' : '#9aa6b6';
+        if (u % 6 > 1 && u % 6 < 4 && v % 4 === 1) c = hash2(b * 13 + (u % 6), v) > 0.5 ? '#c8dcea' : '#6a7888';
+      } else if (v > 34 && hash2(u >> 2, v >> 1) > 0.9) c = '#ffffff';
+      if ((u + v) % 26 < 2) c = mix(c, '#ffffff', 0.3);
+      dot('I', W0.u + u, W0.v + v, c);
+    }
+  }
+  for (let u = -5; u < W0.w + 5; u++) for (let v = 0; v < 3; v++) dot('I', W0.u + u, W0.v - 4 - v, v === 0 ? '#f4f5f6' : '#b0b4ba');
+  // Lichterkette um das Fenster, mit Lämpchen in warmem Gelb
+  const wire: [number, number][] = [];
+  for (let v = 0; v <= W0.h + 6; v++) wire.push([W0.u - 6, W0.v + v]);
+  for (let u = -6; u <= W0.w + 6; u++) wire.push([W0.u + u, W0.v + W0.h + 6 - Math.round(Math.abs(Math.sin((u / (W0.w + 12)) * Math.PI * 4)) * 3)]);
+  for (let v = W0.h + 6; v >= 0; v--) wire.push([W0.u + W0.w + 6, W0.v + v]);
+  wire.forEach(([u, v]) => dot('I', u, v, '#2a2a22'));
+  wire.forEach(([u, v], k) => {
+    if (k % 9) return;
+    dot('I', u, v - 1, '#fff4c8');
+    dot('I', u, v - 2, '#ffd27a');
+    lights.push({ x: ox - u - 1, y: oy + Math.floor(u / 2) - v, r: 22, color: '#ffbe6e', strength: 0.14, bulb: true });
+  });
+  // Mondlicht durchs Fenster
+  lights.push({ x: ox - W0.u - W0.w / 2, y: oy + (W0.u + W0.w / 2) / 2 - W0.v + 40, r: 130, color: '#6e8cdc', strength: 0.35 });
+  // Neonposter mit abstraktem Gesicht links neben dem Fenster
+  for (let u = 0; u < 30; u++) {
+    for (let v = 0; v < 42; v++) {
+      const fr = u < 2 || v < 2 || u > 27 || v > 39;
+      const cx = u - 15;
+      const cy = v - 22;
+      const face = (cx * cx) / 100 + (cy * cy) / 200 < 1;
+      let c = fr ? '#1a1a20' : mix('#1c2a3a', '#2e1c3a', v / 42);
+      if (face) c = cx < -2 ? '#3fc4a8' : cx < 4 ? '#e58a2e' : '#c43a6a';
+      if (face && Math.abs(cy - 4) < 2 && Math.abs(Math.abs(cx) - 4) < 2) c = '#f4f0e0';
+      dot('I', 30 + u, 50 + v, c);
+    }
+  }
+  // Poster rechte Wand: Rakete mit DEPLOY, Neon SHIP IT
+  for (let u = 0; u < 28; u++) {
+    for (let v = 0; v < 40; v++) {
+      const fr = u < 2 || v < 2 || u > 25 || v > 37;
+      let c = fr ? '#141418' : mix('#d97b2e', '#e9c46a', v / 40);
+      const cx = u - 14;
+      const top = v - 14;
+      if (!fr && v > 12 && v < 32 && Math.abs(cx) <= (top > 12 ? (18 - top) * 0.7 : 4)) c = Math.abs(cx) < 1 && v > 20 && v < 24 ? '#3a78c4' : '#f4f0e0';
+      if (!fr && v > 8 && v <= 12 && Math.abs(cx) < 3) c = hash2(u, v) > 0.4 ? '#ff5a2a' : '#ffd34a';
+      dot('J', 14 + u, 46 + v, c);
+    }
+  }
+  wallText(ctx, ox, oy, 'J', 17, 51, 'DEPLOY', '#2a1408');
+  for (let u = 0; u < 28; u++) for (let v = 0; v < 34; v++) dot('J', 150 + u, 52 + v, u < 2 || v < 2 || u > 25 || v > 31 ? '#141418' : mix('#1a1030', '#121a2e', v / 34));
+  wallText(ctx, ox, oy, 'J', 155, 78, 'SHIP', '#5eeac0');
+  wallText(ctx, ox, oy, 'J', 159, 68, 'IT!', '#ff5aa8');
+  lights.push({ x: ox + 164, y: oy + 82 - 70, r: 40, color: '#c46aff', strength: 0.3 });
+  return lights;
+}
+
 /** grounded: Das Haus steht auf seinem Grundstück in der Stadt, ebenerdig und ohne eigene Insel. */
 /** Höhe einer Etage: Wand, Decke und Schwelle. */
 const STOREY_H = WALL_H + 4;
 
-export function buildRoom(loc: LocationInfo, level = 0, grounded = false, floors = 1): Room {
+/** decor false: ohne Fenster, Bilder, Pinnwand und Haustür. So sieht das Haus bei gedrehter Kamera aus. */
+/** low: Wände unten wie im Bauspiel. Die Außenwände sind dann nur ein Sockel, die Etagen darüber fehlen. */
+export function buildRoom(loc: LocationInfo, level = 0, grounded = false, floors = 1, decor = true, lowWalls = false): Room {
   const theme = THEMES[loc.id];
   const { w: W, d: D } = loc;
   // Über dem Raum stehen die oberen Etagen, unter ihm das Erdgeschoss. Beide gehören zum Bild.
   const topExtra = Math.max(0, floors - 1 - level) * STOREY_H;
   const bottomExtra = Math.max(0, level) * STOREY_H;
-  const width = (W + D) * 16 + MARGIN * 2;
-  const height = (W + D) * 8 + WALL_H + MARGIN + 26 + topExtra + bottomExtra;
-  const ox = D * 16 + MARGIN;
-  const oy = WALL_H + 22 + topExtra;
+  // Alles in alten Pixeln gerechnet und RES-fach feiner gezeichnet.
+  const width = ((W + D) * 16 + MARGIN * 2) * RES;
+  const height = ((W + D) * 8 + WALL_H + MARGIN + 26 + topExtra + bottomExtra) * RES;
+  const ox = (D * 16 + MARGIN) * RES;
+  const oy = (WALL_H + 22 + topExtra) * RES;
   const base = layer(width, height);
   const front = layer(width, height);
-  const pen = new Pen(base.ctx, ox, oy);
+  const pen = new Pen(base.ctx, ox, oy, RES);
   const ctx = base.ctx;
 
   // Insel
@@ -314,11 +465,11 @@ export function buildRoom(loc: LocationInfo, level = 0, grounded = false, floors
   }
   const random = seeded(loc.id.length * 991);
   const [minX, maxX] = [island[3][0], island[1][0]];
-  for (let n = 0; n < (grounded ? 0 : (W + D) * 90); n++) {
+  for (let n = 0; n < (grounded ? 0 : (W + D) * 90 * RES * RES); n++) {
     const x = minX + random() * (maxX - minX);
     const y = random() * height;
-    const ii = ((x - ox) / 16 + (y - oy) / 8) / 2;
-    const jj = ((y - oy) / 8 - (x - ox) / 16) / 2;
+    const ii = ((x - ox) / (16 * RES) + (y - oy) / (8 * RES)) / 2;
+    const jj = ((y - oy) / (8 * RES) - (x - ox) / (16 * RES)) / 2;
     if (ii < -pad || jj < -pad || ii > W + pad || jj > D + pad) continue;
     rect(ctx, Math.round(x), Math.round(y), 1 + Math.floor(random() * 2), 1, random() > 0.5 ? '#4f9457' : '#33693d');
   }
@@ -328,9 +479,9 @@ export function buildRoom(loc: LocationInfo, level = 0, grounded = false, floors
     const along = random();
     const onLeft = random() > 0.5;
     const [bx, by] = onLeft ? pen.pt(-0.5 + along * (W + 1), D + 0.62) : pen.pt(W + 0.62, -0.5 + along * (D + 1));
-    for (let k = 0; k < 14; k++) {
-      const dx = (random() - 0.5) * 12;
-      const dy = (random() - 0.7) * 7;
+    for (let k = 0; k < 14 * RES; k++) {
+      const dx = (random() - 0.5) * 12 * RES;
+      const dy = (random() - 0.7) * 7 * RES;
       rect(ctx, Math.round(bx + dx), Math.round(by + dy), 2, 2, bushes[Math.floor(random() * 3)]);
     }
   }
@@ -347,15 +498,16 @@ export function buildRoom(loc: LocationInfo, level = 0, grounded = false, floors
   };
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
-      const i = ((x + 0.5 - ox) / 16 + (y + 0.5 - oy) / 8) / 2;
-      const j = ((y + 0.5 - oy) / 8 - (x + 0.5 - ox) / 16) / 2;
+      const i = ((x + 0.5 - ox) / (16 * RES) + (y + 0.5 - oy) / (8 * RES)) / 2;
+      const j = ((y + 0.5 - oy) / (8 * RES) - (x + 0.5 - ox) / (16 * RES)) / 2;
       if (i < 0 || j < 0 || i >= W || j >= D) continue;
       // Zu den Wänden hin wird es weich dunkler, und durch die Fenster fällt Licht.
       const near = Math.min(i, j);
       const corner = near < 1.3 ? (1.3 - near) * 0.17 : 0;
       const sun = sunlight(loc.id, i, j);
       // Im Obergeschoss liegt Parkett statt des Erdgeschoss-Bodens, damit man sofort sieht, dass man oben ist.
-      const color = level > 0 ? toParquet(theme.floor(i, j)) : theme.floor(i, j);
+      const plain = theme.floorFine ? theme.floorFine(i, j, x, y) : theme.floor(i, j);
+      const color = level > 0 ? toParquet(plain) : plain;
       paint(x, y, sun > 0 ? lighten(darken(color, corner * 0.6), sun) : corner > 0 ? darken(color, corner) : color);
     }
   }
@@ -363,16 +515,27 @@ export function buildRoom(loc: LocationInfo, level = 0, grounded = false, floors
 
   // Teppiche
   if (loc.id === 'kinderzimmer') {
-    pen.floorPoly(2.6, 3.2, 3, 2.2, '#3f6d94');
-    pen.floorPoly(2.8, 3.4, 2.6, 1.8, '#4f83ad');
-    pen.floorPoly(3.1, 3.7, 2, 1.2, '#d9a62e');
-    pen.floorPoly(3.2, 3.8, 1.8, 1, '#4f83ad');
+    // Abgetretener Teppich mit Bordüre, Rautenmuster und Fransen
+    const RUG = ['#4a3e2c', '#625238', '#7a6848', '#94825c', '#b09e78'];
+    fillPolyFn(ctx, [pen.pt(2.4, 2.9), pen.pt(5.6, 2.9), pen.pt(5.6, 5.4), pen.pt(2.4, 5.4)], (x, y) => {
+      const i = ((x + 0.5 - ox) / (16 * RES) + (y + 0.5 - oy) / (8 * RES)) / 2 - 2.4;
+      const j = ((y + 0.5 - oy) / (8 * RES) - (x + 0.5 - ox) / (16 * RES)) / 2 - 2.9;
+      if (i < 0.12 || j < 0.12 || i > 3.08 || j > 2.38) return RUG[1 + ((Math.floor(i * 12) + Math.floor(j * 12)) % 2)];
+      const m = Math.abs(frac(i * 1.5) - 0.5) + Math.abs(frac(j * 1.5) - 0.5);
+      const worn = Math.hypot(i - 1.6, j - 1.2) < 0.7 ? 1 : 0;
+      const t = (m < 0.15 ? 4 : m < 0.24 ? 1 : (x + y) & 1 ? 3 : 2) - worn * 0.7 + (hash2(x, y) > 0.94 ? -1 : 0);
+      return RUG[Math.max(0, Math.min(4, Math.round(t)))];
+    });
+    for (let k = 0; k < 32; k++) {
+      const [x, y] = pen.pt(2.4 + k * 0.1, 5.4);
+      line(ctx, x, y, x - 1, y + 3, RUG[3]);
+    }
   } else if (loc.id === 'buero') {
     for (let n = 0; n < 7; n++) pen.floorPoly(4 + n * 0.5, 4.5, 0.5, 2.6, n % 2 ? '#3f6078' : '#54758c');
   }
 
   // Rückwände, pixelweise. Oben fällt Schatten von der Decke, und Deckenlicht zeichnet sanfte Kegel.
-  const wallH = WALL_H;
+  const wallH = lowWalls ? FRONT_H : WALL_H;
   const wallShade = (color: string, u: number, v: number) => {
     if (v >= wallH - 3) return darken(color, 0.16 - (wallH - v) * 0.03);
     if (v === 4) return lighten(color, 0.14);
@@ -381,28 +544,29 @@ export function buildRoom(loc: LocationInfo, level = 0, grounded = false, floors
     const glow = v > 20 ? Math.max(0, 0.07 - beam * 0.004 - (v - 20) * 0.0015) : 0;
     return glow > 0 ? lighten(color, glow) : color;
   };
-  for (let u = 0; u < W * 16; u++) {
-    for (let v = 0; v < wallH; v++) {
+  // Rückwände Pixel für Pixel in voller Auflösung. Die Muster rechnen in alten Pixeln, fein aufgelöste bekommen die Feinwerte dazu.
+  for (let u = 0; u < W * 16 * RES; u++) {
+    for (let v = 0; v < wallH * RES; v++) {
       const y = oy + Math.floor(u / 2) - v - 1;
-      rect(ctx, ox + u, y, 1, 1, wallShade(theme.wallRight(u, v), u, v));
+      const [cu, cv] = [Math.floor(u / RES), Math.floor(v / RES)];
+      rect(ctx, ox + u, y, 1, 1, wallShade(theme.wallRight(cu, cv, u, v), cu, cv));
     }
   }
-  for (let u = 0; u < D * 16; u++) {
-    for (let v = 0; v < wallH; v++) {
+  for (let u = 0; u < D * 16 * RES; u++) {
+    for (let v = 0; v < wallH * RES; v++) {
       const y = oy + Math.floor(u / 2) - v - 1;
-      rect(ctx, ox - u - 1, y, 1, 1, wallShade(theme.wallLeft(u, v), u, v));
+      const [cu, cv] = [Math.floor(u / RES), Math.floor(v / RES)];
+      rect(ctx, ox - u - 1, y, 1, 1, wallShade(theme.wallLeft(cu, cv, u, v), cu, cv));
     }
   }
 
   // Wanddeko und Türen
   const doors: Room['doors'] = [];
-  if (loc.id === 'kinderzimmer') {
-    drawWindow(pen, 'I', 62, 22, 22, 18);
-    drawPoster(pen, 'I', 40, 22, 12, 16, ['#e5534b', '#f8b62d', '#3f7fd0']);
-    drawPoster(pen, 'J', 82, 24, 10, 13, ['#2fa58f', '#b05cc6', '#f8b62d']);
-    for (const [u, v] of [[8, 46], [20, 40], [90, 44]]) {
-      pen.faceI(0, 0, 0, u % 92, v, 2, 2, '#f8e27a');
-    }
+  const lights: RoomLight[] = [];
+  if (!decor) {
+    // Keine Deko: Die Wände der Grundansicht stehen hier an anderen Stellen.
+  } else if (loc.id === 'kinderzimmer') {
+    lights.push(...kidsRoomDecor(ctx, ox, oy));
   } else if (loc.id === 'garage') {
     drawRollerDoor(pen, 44, 46);
     if (level === 0) doors.push({ face: 'I', j: 0, u: 42, w: 50, h: 42 });
@@ -422,7 +586,7 @@ export function buildRoom(loc: LocationInfo, level = 0, grounded = false, floors
 
   // Pinnwandrahmen. Die Zettel darauf zeichnet die Welt je nach echten Aufträgen.
   const b = theme.board;
-  if (level === 0) {
+  if (level === 0 && decor) {
     pen.faceJ(0, 0, 0, b.u - 2, b.v - 2, b.w + 4, b.h + 4, '#2a3347');
     pen.faceJ(0, 0, 0, b.u, b.v, b.w, b.h, '#d9d4c5');
   }
@@ -432,9 +596,9 @@ export function buildRoom(loc: LocationInfo, level = 0, grounded = false, floors
   fillPoly(ctx, [pen.pt(-THICK, -THICK, wallH), pen.pt(W + THICK, -THICK, wallH), pen.pt(W + THICK, 0, wallH), pen.pt(0, 0, wallH)], capColor);
   fillPoly(ctx, [pen.pt(-THICK, -THICK, wallH), pen.pt(0, 0, wallH), pen.pt(0, D + THICK, wallH), pen.pt(-THICK, D + THICK, wallH)], darken(capColor, 0.06));
   const [ex, ey] = pen.pt(W, 0, wallH);
-  line(ctx, ox, oy - wallH, ex, ey, INK);
+  line(ctx, ox, oy - wallH * RES, ex, ey, INK);
   const [fx, fy] = pen.pt(0, D, wallH);
-  line(ctx, ox, oy - wallH, fx, fy, INK);
+  line(ctx, ox, oy - wallH * RES, fx, fy, INK);
 
   const pillar = tri(theme.pillar, 0.14);
   pen.box(-THICK, -THICK, 0, THICK + 0.1, THICK + 0.1, wallH + 3, pillar);
@@ -444,13 +608,26 @@ export function buildRoom(loc: LocationInfo, level = 0, grounded = false, floors
   for (let k = stepJ; k < D; k += stepJ) pen.box(-THICK, k - 0.14, 0, THICK + 0.08, 0.28, wallH + 3, pillar);
 
   // Vorderwände
-  const fp = new Pen(front.ctx, ox, oy);
+  const fp = new Pen(front.ctx, ox, oy, RES);
   const low = tri(theme.frontFace, 0.16);
   fp.box(W, -THICK, 0, THICK, D + THICK * 2, FRONT_H, low);
   fp.box(-THICK, D, 0, W + THICK, THICK, FRONT_H, low);
-  // Fensterbänder in den Außenseiten
-  for (let u = 18; u < W * 16 - 18; u += 48) fp.faceJ(0, D + THICK, 0, u, 3, 30, 6, '#3e4a5a');
-  for (let u = 18; u < D * 16 - 18; u += 48) fp.faceI(W + THICK, 0, 0, u, 3, 30, 6, '#343f4e');
+  // Fensterbänder in den Außenseiten. Das Kinderzimmer zeigt stattdessen Backstein.
+  if (loc.id === 'kinderzimmer') {
+    fillPolyFn(front.ctx, [fp.pt(0, D + THICK, 0), fp.pt(W, D + THICK, 0), fp.pt(W, D + THICK, FRONT_H), fp.pt(0, D + THICK, FRONT_H)], (x, y) => {
+      const [bx, by] = fp.pt(0, D + THICK, 0);
+      const u = x - bx;
+      return fineBrick(u, by + Math.floor(u / 2) - y + 6 * RES, false);
+    });
+    fillPolyFn(front.ctx, [fp.pt(W + THICK, 0, 0), fp.pt(W + THICK, D, 0), fp.pt(W + THICK, D, FRONT_H), fp.pt(W + THICK, 0, FRONT_H)], (x, y) => {
+      const [bx, by] = fp.pt(W + THICK, 0, 0);
+      const u = bx - x - 1;
+      return fineBrick(u, by + Math.floor(u / 2) - y + 6 * RES, true);
+    });
+  } else {
+    for (let u = 18; u < W * 16 - 18; u += 48) fp.faceJ(0, D + THICK, 0, u, 3, 30, 6, '#3e4a5a');
+    for (let u = 18; u < D * 16 - 18; u += 48) fp.faceI(W + THICK, 0, 0, u, 3, 30, 6, '#343f4e');
+  }
   // Andere Etagen, von außen: Das Erdgeschoss liegt unter dem Raum, die oberen Etagen darüber.
   // Die oberen sind halb durchsichtig, damit man weiter in den eigenen Raum sieht.
   const facade = (z: number, h: number, color: Faces) => {
@@ -463,7 +640,7 @@ export function buildRoom(loc: LocationInfo, level = 0, grounded = false, floors
   // Obere Etagen: Die Rückwände stehen voll da. Die Vorderseite ist aufgeschnitten und zeigt nur den Deckenschnitt,
   // so bleibt der eigene Raum sichtbar.
   const cut = '#8a7f72';
-  for (let s = level + 1; s < floors; s++) {
+  for (let s = level + 1; s < (lowWalls ? level + 1 : floors); s++) {
     const z = WALL_H + 4 + (s - level - 1) * STOREY_H;
     const wall = tri(theme.frontFace, 0.14);
     pen.box(-THICK, -THICK, z, W + THICK * 2, THICK, STOREY_H - 4, wall);
@@ -480,13 +657,13 @@ export function buildRoom(loc: LocationInfo, level = 0, grounded = false, floors
   for (let k = stepI; k < W; k += stepI) fp.box(k - 0.14, D - 0.04, 0, 0.28, THICK + 0.08, FRONT_H + 5, pillar);
   for (let k = stepJ; k < D; k += stepJ) fp.box(W - 0.04, k - 0.14, 0, THICK + 0.08, 0.28, FRONT_H + 5, pillar);
 
-  if (level === 0) {
+  if (level === 0 && decor) {
     const u = loc.door.i * 16 + 2;
     drawDoor(fp, D + THICK, u);
     doors.push({ face: 'J', j: D + THICK, u: u - 2, w: 17, h: 40 });
   }
 
-  return { base, front, pen, width, height, board: b, doors };
+  return { base, front, pen, width, height, board: b, doors, lights, evening: loc.id === 'kinderzimmer' && decor };
 }
 
 export function waterPattern(): Layer {

@@ -495,7 +495,15 @@ export const FURNITURE: FurnitureInfo[] = [
   { kind: 'beanbag', title: 'Sitzsack', blurb: 'Für Sozialbereich und Gaming-Raum.', cost: 0, size: '1 × 1 Feld' },
   { kind: 'arcade', title: 'Spielautomat', blurb: 'Im Gaming-Raum zocken freie Agenten hier.', cost: 0, size: '1 × 1 Feld' },
   { kind: 'board', title: 'Tafel', blurb: 'Zeigt die Zettel. In einer Abteilung nur die ihrer Leute, sonst alle.', cost: 0, size: '1 × 1 Feld' },
-  { kind: 'wall', title: 'Wand', blurb: 'Klick setzt den Anfang, ein zweiter Klick auf derselben Linie zieht die Wand. Klick auf eine Wand reißt sie ab.', cost: 0, size: '1 Kante' },
+  { kind: 'wall', title: 'Wand', blurb: 'Mit gedrückter Maus ziehen. Klick auf eine Wand reißt sie ab.', cost: 0, size: '1 Kante' },
+  { kind: 'half', title: 'Halbwand', blurb: 'Hüfthoch. Versperrt den Weg, trennt aber keine Räume.', cost: 0, size: '1 Kante' },
+  { kind: 'fence', title: 'Geländer', blurb: 'Für Podeste und Galerien. Versperrt den Weg, trennt aber keine Räume.', cost: 0, size: '1 Kante' },
+  { kind: 'steps', title: 'Stufen', blurb: 'Führen eine Höhenstufe hinauf. R dreht sie zur höheren Seite.', cost: 0, size: '1 × 1 Feld' },
+  { kind: 'column', title: 'Säule', blurb: 'Trägt nichts, steht aber im Weg.', cost: 0, size: '1 × 1 Feld' },
+  { kind: 'picture', title: 'Bild', blurb: 'Hängt an einer Wandseite.', cost: 0, size: 'An der Wand' },
+  { kind: 'wallLamp', title: 'Wandlampe', blurb: 'Hängt an einer Wandseite.', cost: 0, size: 'An der Wand' },
+  { kind: 'wallShelf', title: 'Wandregal', blurb: 'Hängt an einer Wandseite.', cost: 0, size: 'An der Wand' },
+  { kind: 'clock', title: 'Wanduhr', blurb: 'Hängt an einer Wandseite.', cost: 0, size: 'An der Wand' },
 ];
 
 /** Was schon im Raum steht. Es kostet nichts, lässt sich aber auch nicht nachkaufen. */

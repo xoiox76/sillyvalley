@@ -4,15 +4,15 @@ import { chooseLanguage } from './language.ts';
 import type { Language } from '../i18n/translate.ts';
 import { locale } from '../i18n/translate.ts';
 import { marked } from 'marked';
-import { DEFAULT_CEO, LOOK_OPTIONS, NAME_IDEAS, ROLES, RULES, roleById, setExtraModels, TASK_BLOCKS, type SkillArea } from '../../shared/catalog.ts';
-import { checkDepartment, checkPlacement, isEdgeKind, rectFromCorners, rectWalls, wallSides, type Tile } from '../../shared/layout.ts';
+import { DEFAULT_CEO, FURNITURE, LOOK_OPTIONS, NAME_IDEAS, ROLES, RULES, roleById, setExtraModels, TASK_BLOCKS, type SkillArea } from '../../shared/catalog.ts';
+import { checkDepartment, checkPlacement, isEdgeKind, isWallHung, rectFromCorners, rectWalls, wallSides, type Tile } from '../../shared/layout.ts';
 import { ROLE_TEMPLATE, parseRole, roleToMarkdown, withRoleColor } from '../../shared/roleMarkdown.ts';
 import { siteAt, siteBase, storeyOf, buildingAt, checkShaft, floorOf, isShaft, itemsOnFloor, roomOf } from '../../shared/building.ts';
-import type { Agent, BoardItem, FurnitureKind, ProjectAgent, LocationId, Look, PlacedItem, Rotation, Snapshot } from '../../shared/types.ts';
+import type { Agent, BoardItem, FloorStyle, FurnitureKind, ProjectAgent, LocationId, Look, PlacedItem, Rotation, Snapshot } from '../../shared/types.ts';
 import { parcelById } from '../../shared/town.ts';
 import type { City } from '../../shared/town.ts';
 import { TownView } from '../world/town.ts';
-import { World, type WallEdge } from '../world/world.ts';
+import { World, type WallEdge, type WallMode } from '../world/world.ts';
 import { api, type FileEntry } from './api.ts';
 import { html, morph, type Safe, show } from './html.ts';
 import {
@@ -21,7 +21,7 @@ import {
   type ContractView, type DepartmentDraft, type FilesDraft, type HireDraft, type NoteDraft, type TeamDraft, type WorkspaceFolds, type MandateDraft, type MeetingDraft, type OrderDraft, type OrderTeamDraft, type SelfStartMode, type ViewerState,
   type RoomNaming, jobFromKit,
 } from './views.ts';
-import { isSeparateRoom, regionAt, zoneAt } from '../../shared/zones.ts';
+import { floorStyleAt, isSeparateRoom, regionAt, zoneAt } from '../../shared/zones.ts';
 import { parseSkillMarkdown } from '../../shared/skillfile.ts';
 import { readBusinessCase, readVision } from './charter.ts';
 
@@ -42,7 +42,14 @@ type Build =
   | { kind: FurnitureKind; rot: Rotation; id?: string; inventoryId?: string; tile: Tile | null; withFloor?: boolean }
   | { kind: 'department'; rot: 0; id?: undefined; inventoryId?: undefined; tile: Tile | null; anchor: Tile | null; departmentId?: string }
   /** Raum-Werkzeug: zwei Ecken, vier Wände. */
-  | { kind: 'roomwalls'; rot: 0; id?: undefined; inventoryId?: undefined; tile: Tile | null; anchor: Tile | null };
+  | { kind: 'roomwalls'; rot: 0; id?: undefined; inventoryId?: undefined; tile: Tile | null; anchor: Tile | null }
+  /** Boden verlegen: ein Rechteck ziehen, mit Umschalt den ganzen Raum. style null nimmt den Belag weg. */
+  | { kind: 'floor'; rot: 0; id?: undefined; inventoryId?: undefined; tile: Tile | null; anchor: Tile | null; style: FloorStyle | null }
+  /** Podest: Felder auf eine Höhenstufe setzen, wie das Boden-Werkzeug aufgezogen. */
+  | { kind: 'level'; rot: 0; id?: undefined; inventoryId?: undefined; tile: Tile | null; anchor: Tile | null; level: number };
+
+/** Werkzeuge, die ein Rechteck aufziehen. */
+const isRectTool = (kind: string) => kind === 'department' || kind === 'roomwalls' || kind === 'floor' || kind === 'level';
 
 const TABS: { id: Tab; label: string; icon: string }[] = [
   { id: 'bauen', label: 'Bauen', icon: 'hammer' },
@@ -100,7 +107,13 @@ export function renderGame(root: HTMLElement, companyId: string, onLeave: () => 
   /** Welche Abteilung die gerade geöffnete Tafel zeigt. null: alle Zettel. */
   let boardDepartment: string | null = null;
   /** Gezogene Wände niedrig zeichnen, damit man in die Räume sieht. */
-  let wallsLow = false;
+  let wallMode: WallMode = 'cut';
+  /** Pipette: Der nächste Klick nimmt ein Möbelstück, eine Wandfarbe oder einen Boden auf. */
+  let pipette = false;
+  /** Gedrückte Sondertasten. Umschalt füllt ganze Räume, Alt oder Cmd reißt beim Ziehen ab. */
+  const mods = { shift: false, remove: false };
+  /** Ob der letzte Druck gerade einen Anfang gesetzt hat. Dann vollendet das Loslassen an anderer Stelle den Zug. */
+  let pressFresh = false;
   /** Gewählte Wandfarbe. Solange sie gesetzt ist, streicht ein Klick auf eine Wand sie an. */
   let paintColor: string | null = null;
   /** Raum benennen: erst in den Raum klicken, dann Zweck und Name eintragen. */
@@ -152,8 +165,20 @@ export function renderGame(root: HTMLElement, companyId: string, onLeave: () => 
       build.tile = tile;
       syncGhost();
     },
+    dragBuild() {
+      return Boolean(build) && (isRectTool(build!.kind) || (isEdgeKind(build!.kind) && build!.kind !== 'door' && !build!.id));
+    },
+    onPress(tile, edge) {
+      void pressBuild(tile, edge);
+    },
+    onRelease(tile, edge) {
+      void releaseBuild(tile, edge);
+    },
+    onFloorClick(tile) {
+      if (pipette && snap) pickFloor(tile);
+    },
     onEdgeHover(edge) {
-      if (!build || !isEdgeKind(build.kind) || !edge) return;
+      if (!build || !(isEdgeKind(build.kind) || isWallHung(build.kind)) || !edge) return;
       build.tile = { i: edge.i, j: edge.j };
       build.rot = edge.rot;
       syncGhost();
@@ -180,31 +205,11 @@ export function renderGame(root: HTMLElement, companyId: string, onLeave: () => 
         return;
       }
       if (build.kind === 'department') {
-        if (!build.anchor) {
-          build.anchor = tile;
-          buildMessage = '';
-          syncGhost();
-          render();
-          return;
-        }
-        const rect = rectFromCorners(build.anchor, tile);
-        const check = snap ? checkDepartment(roomOf(snap.company, viewFloor), snap.company.departments.filter((d) => floorOf(d) === viewFloor), { ...rect, id: build.departmentId }) : { ok: false, reason: '' };
-        if (!check.ok) {
-          buildMessage = check.reason;
-          build.anchor = null;
-          syncGhost();
-          render();
-          return;
-        }
-        if (build.departmentId) {
-          api.patchDepartment(companyId, build.departmentId, { ...rect, floor: viewFloor }).then(cancelBuild).catch((err) => {
-            buildMessage = (err as Error).message;
-            render();
-          });
-          return;
-        }
-        modal = { type: 'department', draft: { ...rect, error: '', busy: false } };
-        render();
+        departmentTile(tile);
+        return;
+      }
+      if (build.kind === 'floor' || build.kind === 'level') {
+        void floorTile(tile);
         return;
       }
       syncGhost();
@@ -239,11 +244,12 @@ export function renderGame(root: HTMLElement, companyId: string, onLeave: () => 
     },
     onItemClick(item: PlacedItem) {
       // Streichen: Jede angeklickte Wand bekommt die gewählte Farbe.
-      if (paintColor && tab === 'bauen' && (item.kind === 'wall' || item.kind === 'window')) {
-        const before = item.color ?? 'weiss';
-        api.paintItem(companyId, item.id, paintColor)
-          .then(() => remember({ label: 'Gestrichen', undo: () => api.paintItem(companyId, item.id, before).then(() => undefined) }))
-          .catch(fail);
+      if (pipette && tab === 'bauen') {
+        pickItem(item);
+        return;
+      }
+      if (paintColor && tab === 'bauen' && (item.kind === 'wall' || item.kind === 'window' || item.kind === 'half')) {
+        void paintWalls(item, paintColor);
         return;
       }
       // Eine aufgestellte Tafel zeigt die Zettel der Abteilung, in der sie steht. Sonst alle.
@@ -347,6 +353,10 @@ export function renderGame(root: HTMLElement, companyId: string, onLeave: () => 
       world.setGhost({ kind: 'roomwalls', ...rect });
       return;
     }
+    if (build.kind === 'floor' || build.kind === 'level') {
+      world.setGhost({ kind: 'floor', i: build.tile.i, j: build.tile.j, tiles: floorTiles(build.anchor, build.tile), style: build.kind === 'floor' ? build.style : null });
+      return;
+    }
     if (build.kind === 'department') {
       // Ohne Anker zeigt die Vorschau die Mindestgröße, mit Anker den Bereich bis zur Maus.
       const rect = build.anchor ? rectFromCorners(build.anchor, build.tile) : { i: build.tile.i, j: build.tile.j, w: RULES.departmentMinSize, d: RULES.departmentMinSize };
@@ -356,7 +366,7 @@ export function renderGame(root: HTMLElement, companyId: string, onLeave: () => 
     if (isEdgeKind(build.kind) && !build.id) {
       const here: WallEdge = { i: build.tile.i, j: build.tile.j, rot: build.rot };
       const run = build.kind !== 'door' && wallAnchor ? wallRun(wallAnchor, here) : [here];
-      world.setGhost({ kind: build.kind, i: here.i, j: here.j, rot: here.rot, run });
+      world.setGhost({ kind: build.kind, i: here.i, j: here.j, rot: here.rot, run, ...(mods.remove && wallAnchor ? { removing: true } : {}) });
       return;
     }
     world.setGhost({ kind: build.kind, id: build.id, i: build.tile.i, j: build.tile.j, rot: build.rot });
@@ -436,6 +446,276 @@ export function renderGame(root: HTMLElement, companyId: string, onLeave: () => 
     render();
   }
 
+  /** Abteilung abstecken: erste Ecke merken, mit der zweiten den Bereich festlegen. */
+  function departmentTile(tile: Tile): void {
+    if (!build || build.kind !== 'department') return;
+    if (!build.anchor) {
+      build.anchor = tile;
+      buildMessage = '';
+      syncGhost();
+      render();
+      return;
+    }
+    const rect = rectFromCorners(build.anchor, tile);
+    const check = snap ? checkDepartment(roomOf(snap.company, viewFloor), snap.company.departments.filter((d) => floorOf(d) === viewFloor), { ...rect, id: build.departmentId }) : { ok: false, reason: '' };
+    if (!check.ok) {
+      buildMessage = check.reason;
+      build.anchor = null;
+      syncGhost();
+      render();
+      return;
+    }
+    if (build.departmentId) {
+      api.patchDepartment(companyId, build.departmentId, { ...rect, floor: viewFloor }).then(cancelBuild).catch((err) => {
+        buildMessage = (err as Error).message;
+        render();
+      });
+      return;
+    }
+    modal = { type: 'department', draft: { ...rect, error: '', busy: false } };
+    render();
+  }
+
+  /** Die Felder, die das Boden-Werkzeug belegt: das Rechteck vom Anfang bis zur Maus, mit Umschalt der ganze Raum. */
+  function floorTiles(anchor: Tile | null, tile: Tile): string[] {
+    if (!snap) return [];
+    if (mods.shift) return [...regionAt(snap.company, viewFloor, tile)];
+    const r = anchor ? rectFromCorners(anchor, tile) : { i: tile.i, j: tile.j, w: 1, d: 1 };
+    const out: string[] = [];
+    for (let i = r.i; i < r.i + r.w; i++) for (let j = r.j; j < r.j + r.d; j++) out.push(`${i},${j}`);
+    return out;
+  }
+
+  /** Boden-Werkzeug: Anfang setzen oder verlegen. Mit Umschalt genügt ein Klick in den Raum. */
+  async function floorTile(tile: Tile): Promise<void> {
+    if (!build || (build.kind !== 'floor' && build.kind !== 'level') || !snap) return;
+    if (!build.anchor && !mods.shift) {
+      build.anchor = tile;
+      syncGhost();
+      render();
+      return;
+    }
+    const tiles = floorTiles(build.anchor, tile).map((k) => {
+      const [i, j] = k.split(',').map(Number);
+      return { i, j };
+    });
+    build.anchor = null;
+    const floor = viewFloor;
+    const company = snap.company;
+    if (build.kind === 'level') {
+      const level = build.level;
+      const old = new Map<number, { i: number; j: number }[]>();
+      for (const t of tiles) {
+        const was = company.floorHeight?.[`${floor}:${t.i},${t.j}`] ?? 0;
+        old.set(was, [...(old.get(was) ?? []), t]);
+      }
+      try {
+        await api.setLevel(companyId, { floor, tiles, level });
+        remember({ label: 'Podest', undo: async () => { for (const [was, group] of old) await api.setLevel(companyId, { floor, tiles: group, level: was }); } });
+        buildMessage = '';
+      } catch (err) {
+        buildMessage = (err as Error).message;
+      }
+      syncGhost();
+      render();
+      return;
+    }
+    // Für Rückgängig: der alte Belag jedes Feldes, nach Belag gruppiert.
+    const before = new Map<string, { i: number; j: number }[]>();
+    for (const t of tiles) {
+      const old = floorStyleAt(company, floor, t) ?? '';
+      before.set(old, [...(before.get(old) ?? []), t]);
+    }
+    try {
+      await api.paintFloor(companyId, { floor, tiles, style: build.style });
+      remember({ label: 'Boden', undo: async () => { for (const [style, group] of before) await api.paintFloor(companyId, { floor, tiles: group, style: style || null }); } });
+      buildMessage = '';
+    } catch (err) {
+      buildMessage = (err as Error).message;
+    }
+    syncGhost();
+    render();
+  }
+
+  /** Maustaste gedrückt: Anfang setzen, oder einen per Klick begonnenen Zug hier beenden. */
+  async function pressBuild(tile: Tile | null, edge: WallEdge | null): Promise<void> {
+    if (!build) return;
+    if (isRectTool(build.kind)) {
+      if (!tile) return;
+      build.tile = tile;
+      const anchor = (build as { anchor: Tile | null }).anchor;
+      pressFresh = !anchor && !((build.kind === 'floor' || build.kind === 'level') && mods.shift);
+      if (build.kind === 'roomwalls') await roomWallsClick(tile);
+      else if (build.kind === 'department') departmentTile(tile);
+      else await floorTile(tile);
+      return;
+    }
+    if (!edge) return;
+    build.tile = { i: edge.i, j: edge.j };
+    build.rot = edge.rot;
+    if (wallAnchor) {
+      pressFresh = false;
+      const from = wallAnchor;
+      wallAnchor = null;
+      await wallRunBuild(wallRun(from, edge));
+      return;
+    }
+    wallAnchor = edge;
+    pressFresh = true;
+    buildMessage = '';
+    syncGhost();
+    render();
+  }
+
+  /** Maustaste losgelassen: Wurde gezogen, entsteht der Zug bis hierher. */
+  async function releaseBuild(tile: Tile | null, edge: WallEdge | null): Promise<void> {
+    if (!build || !pressFresh) return;
+    pressFresh = false;
+    if (isRectTool(build.kind)) {
+      const anchor = (build as { anchor: Tile | null }).anchor;
+      if (!tile || !anchor || (tile.i === anchor.i && tile.j === anchor.j)) return;
+      if (build.kind === 'roomwalls') await roomWallsClick(tile);
+      else if (build.kind === 'department') departmentTile(tile);
+      else await floorTile(tile);
+      return;
+    }
+    if (!wallAnchor || !isEdgeKind(build.kind)) return;
+    const target = edge ?? wallAnchor;
+    if (target.i === wallAnchor.i && target.j === wallAnchor.j && target.rot % 2 === wallAnchor.rot % 2) {
+      // Ein einzelner Klick auf eine stehende Wand reißt sie ab. Sonst wartet der Anfang auf den zweiten Klick.
+      if (wallOn(target, build.kind)) {
+        wallAnchor = null;
+        await wallRunRemove([target]);
+      }
+      return;
+    }
+    const from = wallAnchor;
+    wallAnchor = null;
+    await wallRunBuild(wallRun(from, target));
+  }
+
+  /** Einen Zug bauen. Mit Alt oder Cmd reißt derselbe Zug ab. Was schon steht, bleibt. */
+  async function wallRunBuild(run: WallEdge[]): Promise<void> {
+    if (!build || !isEdgeKind(build.kind)) return;
+    if (mods.remove) {
+      await wallRunRemove(run);
+      return;
+    }
+    const kind = build.kind;
+    buildMessage = '';
+    const built: string[] = [];
+    const replaced: PlacedItem[] = [];
+    for (const segment of run) {
+      if (wallOn(segment, kind)) continue;
+      // Fenster und Glaswände setzen sich in eine stehende Wand.
+      const wall = kind === 'window' || kind === 'glass' ? wallOn(segment, 'wall') : undefined;
+      try {
+        const item = (await api.placeItem(companyId, { kind, floor: viewFloor, i: segment.i, j: segment.j, rot: segment.rot })) as PlacedItem;
+        built.push(item.id);
+        if (wall) replaced.push(wall);
+      } catch (err) {
+        buildMessage = (err as Error).message;
+        break;
+      }
+    }
+    if (built.length) remember({ label: built.length === 1 ? 'Wand' : `${built.length} Wandstücke`, undo: async () => {
+      for (const id of built) await api.deleteItem(companyId, id).catch(() => undefined);
+      for (const wall of replaced) await placeAgain(wall).catch(() => undefined);
+    } });
+    syncGhost();
+    render();
+  }
+
+  async function wallRunRemove(run: WallEdge[]): Promise<void> {
+    if (!build || !isEdgeKind(build.kind)) return;
+    const kind = build.kind;
+    const gone: PlacedItem[] = [];
+    buildMessage = '';
+    for (const segment of run) {
+      const existing = wallOn(segment, kind);
+      if (!existing) continue;
+      try {
+        await api.deleteItem(companyId, existing.id);
+        gone.push(existing);
+      } catch (err) {
+        buildMessage = (err as Error).message;
+      }
+    }
+    if (gone.length) remember({ label: 'Abgerissen', undo: async () => { for (const item of gone) await placeAgain(item).catch(() => undefined); } });
+    syncGhost();
+    render();
+  }
+
+  /** Streichen. Mit Umschalt bekommt jede Wandseite des Raums die Farbe, sonst nur die sichtbare Seite. */
+  async function paintWalls(item: PlacedItem, color: string): Promise<void> {
+    if (!snap) return;
+    const side = world.visibleSide(item);
+    const floor = floorOf(item);
+    const targets: { item: PlacedItem; side: 'front' | 'back' }[] = [];
+    if (mods.shift) {
+      const [a, b] = wallSides(item);
+      const room = regionAt(snap.company, floor, side === 'front' ? b : a);
+      for (const p of itemsOnFloor(snap.company.placed, floor)) {
+        if (p.kind !== 'wall' && p.kind !== 'window' && p.kind !== 'half') continue;
+        const [pa, pb] = wallSides(p);
+        if (room.has(`${pb.i},${pb.j}`)) targets.push({ item: p, side: 'front' });
+        if (room.has(`${pa.i},${pa.j}`)) targets.push({ item: p, side: 'back' });
+      }
+    } else {
+      targets.push({ item, side });
+    }
+    const undo: { id: string; color: string; side: 'front' | 'back' }[] = [];
+    try {
+      for (const t of targets) {
+        const was = t.side === 'front' ? (t.item.color ?? 'weiss') : (t.item.colorBack ?? t.item.color ?? 'weiss');
+        await api.paintItem(companyId, t.item.id, color, t.side);
+        undo.push({ id: t.item.id, color: was, side: t.side });
+      }
+    } catch (err) {
+      fail(err);
+    }
+    if (undo.length) remember({ label: undo.length === 1 ? 'Gestrichen' : `${undo.length} Wandseiten gestrichen`, undo: async () => { for (const u of undo) await api.paintItem(companyId, u.id, u.color, u.side); } });
+  }
+
+  /** Pipette auf einem Gegenstand: Wände geben ihre Farbe, Möbel werden zum nächsten Bauteil. */
+  function pickItem(item: PlacedItem): void {
+    pipette = false;
+    if (item.kind === 'wall' || item.kind === 'window' || item.kind === 'half') {
+      const side = world.visibleSide(item);
+      paintColor = (side === 'front' ? item.color : (item.colorBack ?? item.color)) ?? 'weiss';
+      build = null;
+      world.setGhost(null);
+      render();
+      return;
+    }
+    if (!FURNITURE.some((f) => f.kind === item.kind) || item.kind === 'ceoDesk') {
+      toast('info', 'Das gibt es nicht zu kaufen.');
+      render();
+      return;
+    }
+    paintColor = null;
+    build = { kind: item.kind, rot: item.rot, tile: null };
+    buildMessage = '';
+    syncGhost();
+    render();
+  }
+
+  /** Pipette auf dem Boden: Der Belag des Feldes wird zum Boden-Werkzeug. */
+  function pickFloor(tile: Tile): void {
+    if (!snap) return;
+    pipette = false;
+    const style = floorStyleAt(snap.company, viewFloor, tile) ?? zoneAt(snap.company, viewFloor, tile)?.floorStyle;
+    if (!style) {
+      toast('info', 'Hier liegt der Boden des Hauses.');
+      render();
+      return;
+    }
+    paintColor = null;
+    build = { kind: 'floor', rot: 0, tile: null, anchor: null, style };
+    syncGhost();
+    render();
+  }
+
   /** Alle Kanten vom Anfang bis zur Maus. Die Wand rastet auf der Linie des Anfangs ein. */
   function wallRun(from: WallEdge, raw: WallEdge): WallEdge[] {
     const to: WallEdge = from.rot === 0 ? { i: raw.i, j: from.j, rot: 0 } : { i: from.i, j: raw.j, rot: 1 };
@@ -453,6 +733,12 @@ export function renderGame(root: HTMLElement, companyId: string, onLeave: () => 
 
   /** Wand-Werkzeug: Klick auf eine Wand reißt sie ab, sonst Anfang setzen und mit dem zweiten Klick ziehen. */
   async function wallClick(edge: WallEdge): Promise<void> {
+    if (build && isWallHung(build.kind)) {
+      build.tile = { i: edge.i, j: edge.j };
+      build.rot = edge.rot;
+      await placeBuild();
+      return;
+    }
     if (!build || !isEdgeKind(build.kind) || !snap) return;
     build.tile = { i: edge.i, j: edge.j };
     build.rot = edge.rot;
@@ -469,8 +755,10 @@ export function renderGame(root: HTMLElement, companyId: string, onLeave: () => 
           await api.deleteItem(companyId, existing.id);
           remember({ label: 'Tür entfernt', undo: async () => void (await placeAgain(existing)) });
         } else {
+          // Eine Tür in einer Wand ersetzt dieses Wandstück. Rückgängig stellt die Wand wieder hin.
+          const wall = wallOn(edge, 'wall');
           const door = (await api.placeItem(companyId, { kind: 'door', floor: viewFloor, i: edge.i, j: edge.j, rot: edge.rot })) as PlacedItem;
-          remember({ label: 'Tür', undo: () => api.deleteItem(companyId, door.id).then(() => undefined) });
+          remember({ label: 'Tür', undo: async () => { await api.deleteItem(companyId, door.id); if (wall) await placeAgain(wall); } });
         }
         buildMessage = '';
       } catch (err) {
@@ -521,7 +809,7 @@ export function renderGame(root: HTMLElement, companyId: string, onLeave: () => 
 
   function rotateBuild(): void {
     // Bei einem neuen Aufgang wählt die Drehung die Seite, auf der man ankommt.
-    if (!build || build.kind === 'department' || build.kind === 'roomwalls') return;
+    if (!build || isRectTool(build.kind) || isWallHung(build.kind)) return;
     build.rot = ((build.rot + 1) % 4) as Rotation;
     buildMessage = '';
     syncGhost();
@@ -558,15 +846,41 @@ export function renderGame(root: HTMLElement, companyId: string, onLeave: () => 
   /** Die Mitarbeiterakten am Laptop. */
   function openFiles(): void {
     const first = snap?.company.agents.find((a) => a.hired && !a.firedAt) ?? snap?.company.agents[0];
-    modal = { type: 'files', draft: { app: null, browserFrom: null, browserKey: 0, diff: null, connectionKind: 'openai', mailId: null, roadmapOwner: null, filePath: null, fileDoc: null, agentId: first?.id ?? null, roleId: null, roleText: ROLE_TEMPLATE, roleKey: 0, roleError: '', roleNote: '' } };
+    modal = { type: 'files', draft: { app: null, browserFrom: null, browserKey: 0, diff: null, connectionKind: 'openai', mailId: null, roadmapOwner: null, filePath: null, fileDoc: null, agentId: first?.id ?? null, roleId: null, roleText: ROLE_TEMPLATE, roleKey: 0, roleError: '', roleNote: '', team: null } };
     refreshProjectAgents();
     refreshFiles();
+    render();
+  }
+
+  function setWallMode(mode: WallMode): void {
+    wallMode = mode;
+    world.setWallMode(mode);
+    render();
+  }
+
+  /** Die Kamera dreht sich um das Haus. Die Vorschau gehört danach an die neue Mausstelle. */
+  function turnCamera(step: number): void {
+    world.rotateCamera(step);
+    if (build) build.tile = null;
+    wallAnchor = null;
+    syncGhost();
+    render();
+  }
+
+  function startPipette(): void {
+    build = null;
+    wallAnchor = null;
+    paintColor = null;
+    roomMode = null;
+    pipette = true;
+    world.setGhost(null);
     render();
   }
 
   function cancelBuild(): void {
     build = null;
     wallAnchor = null;
+    pipette = false;
     roomMode = null;
     paintColor = null;
     buildMessage = '';
@@ -626,7 +940,7 @@ export function renderGame(root: HTMLElement, companyId: string, onLeave: () => 
   }
 
   async function placeBuild(): Promise<void> {
-    if (!build?.tile || !snap || build.kind === 'department' || build.kind === 'roomwalls') return;
+    if (!build?.tile || !snap || build.kind === 'department' || build.kind === 'roomwalls' || build.kind === 'floor' || build.kind === 'level') return;
     if (isShaft(build.kind) && !build.id) {
       const shaft = { kind: build.kind, i: build.tile.i, j: build.tile.j, rot: build.rot };
       const fits = checkShaft(snap.company, shaft);
@@ -665,7 +979,8 @@ export function renderGame(root: HTMLElement, companyId: string, onLeave: () => 
         const item = (await api.placeItem(companyId, { kind: candidate.kind, floor: viewFloor, i: candidate.i, j: candidate.j, rot: candidate.rot })) as PlacedItem;
         remember({ label: 'Aufgestellt', undo: () => api.deleteItem(companyId, item.id).then(() => undefined) });
       }
-      build = null;
+      // Mit Umschalt bleibt das Werkzeug in der Hand, wie in einem Bauspiel.
+      if (!(mods.shift && !build.id && !build.inventoryId)) build = null;
       buildMessage = '';
       syncGhost();
       render();
@@ -1420,8 +1735,32 @@ export function renderGame(root: HTMLElement, companyId: string, onLeave: () => 
       render();
     },
     'toggle-walls'() {
-      wallsLow = !wallsLow;
-      world.setWallsLow(wallsLow);
+      setWallMode(wallMode === 'down' ? 'up' : 'down');
+    },
+    'wall-mode'(el) {
+      setWallMode(el.dataset.id as WallMode);
+    },
+    camera(el) {
+      turnCamera(Number(el.dataset.id));
+    },
+    pipette() {
+      startPipette();
+    },
+    'level-pick'(el) {
+      build = { kind: 'level', rot: 0, tile: null, anchor: null, level: Number(el.dataset.id) };
+      paintColor = null;
+      pipette = false;
+      buildMessage = '';
+      syncGhost();
+      render();
+    },
+    'floor-pick'(el) {
+      const style = el.dataset.id === 'none' ? null : (el.dataset.id as FloorStyle);
+      build = { kind: 'floor', rot: 0, tile: null, anchor: null, style };
+      paintColor = null;
+      pipette = false;
+      buildMessage = '';
+      syncGhost();
       render();
     },
     'room-mode'() {
@@ -1622,6 +1961,97 @@ export function renderGame(root: HTMLElement, companyId: string, onLeave: () => 
         Object.assign(draft, { roleId: null, roleText: ROLE_TEMPLATE, roleKey: draft.roleKey + 1, roleError: '', roleNote: '' });
       } catch (err) {
         draft.roleError = (err as Error).message;
+      }
+      render();
+    },
+    'teams-new'() {
+      if (modal?.type !== 'files') return;
+      modal.draft.team = { id: null, name: '', purpose: '', leadId: null, roles: [], extraIds: [], error: '', note: '', busy: false };
+      render();
+    },
+    'teams-open'(el) {
+      if (modal?.type !== 'files' || !snap) return;
+      const team = snap.company.teams.find((t) => t.id === el.dataset.id);
+      if (!team) return;
+      const roles = (team.roles ?? []).map((r) => ({ key: r.id, id: r.id, title: r.title, companyRoleId: r.companyRoleId, memberIds: [...r.memberIds] }));
+      const placed = new Set([team.leadId, ...roles.flatMap((r) => r.memberIds)]);
+      modal.draft.team = { id: team.id, name: team.name, purpose: team.purpose, leadId: team.leadId, roles, extraIds: team.memberIds.filter((id) => !placed.has(id)), error: '', note: '', busy: false };
+      render();
+    },
+    'teams-lead'(el) {
+      const work = modal?.type === 'files' ? modal.draft.team : null;
+      if (!work) return;
+      work.leadId = el.dataset.id!;
+      work.extraIds = work.extraIds.filter((id) => id !== work.leadId);
+      render();
+    },
+    'teams-role-add'(el) {
+      const work = modal?.type === 'files' ? modal.draft.team : null;
+      if (!work || !snap) return;
+      const base = snap.company.roles.find((r) => r.id === el.dataset.id) ?? null;
+      const input = root.querySelector<HTMLInputElement>('[data-team-role-title]');
+      const title = base?.title ?? input?.value.trim() ?? '';
+      if (!title) {
+        work.error = 'Gib der Rolle einen Titel.';
+      } else if (work.roles.some((r) => r.title.toLowerCase() === title.toLowerCase())) {
+        work.error = `Die Rolle "${title}" steht schon im Team.`;
+      } else {
+        const id = `tr${Math.random().toString(36).slice(2, 10)}`;
+        work.roles.push({ key: id, id, title, companyRoleId: base?.id ?? null, memberIds: [] });
+        work.error = '';
+        if (!base && input) input.value = '';
+      }
+      render();
+    },
+    'teams-role-remove'(el) {
+      const work = modal?.type === 'files' ? modal.draft.team : null;
+      if (!work) return;
+      work.roles = work.roles.filter((r) => r.key !== el.dataset.id);
+      render();
+    },
+    'teams-assign'(el) {
+      const work = modal?.type === 'files' ? modal.draft.team : null;
+      const role = work?.roles.find((r) => r.key === el.dataset.role);
+      if (!work || !role) return;
+      const id = el.dataset.id!;
+      role.memberIds = role.memberIds.includes(id) ? role.memberIds.filter((m) => m !== id) : [...role.memberIds, id];
+      work.extraIds = work.extraIds.filter((m) => m !== id);
+      render();
+    },
+    'teams-extra-remove'(el) {
+      const work = modal?.type === 'files' ? modal.draft.team : null;
+      if (!work) return;
+      work.extraIds = work.extraIds.filter((id) => id !== el.dataset.id);
+      render();
+    },
+    async 'teams-save'() {
+      const work = modal?.type === 'files' ? modal.draft.team : null;
+      if (!work || !work.leadId) return;
+      const roles = work.roles.map((r) => ({ id: r.id, title: r.title, companyRoleId: r.companyRoleId, memberIds: r.memberIds }));
+      const memberIds = [...new Set([work.leadId, ...work.extraIds, ...roles.flatMap((r) => r.memberIds)])];
+      const body = { name: work.name, purpose: work.purpose, leadId: work.leadId, memberIds, roles };
+      work.busy = true;
+      work.error = '';
+      render();
+      try {
+        if (work.id) await api.updateTeam(companyId, work.id, body);
+        else work.id = (await api.createTeam(companyId, body)).id;
+        work.note = 'Gespeichert. Der Manager sieht die Rollen bei der nächsten Planung.';
+      } catch (err) {
+        work.error = (err as Error).message;
+        work.note = '';
+      }
+      work.busy = false;
+      render();
+    },
+    async 'teams-delete'(el) {
+      const work = modal?.type === 'files' ? modal.draft.team : null;
+      if (!work) return;
+      try {
+        await api.deleteTeam(companyId, el.dataset.id!);
+        if (modal?.type === 'files') modal.draft.team = null;
+      } catch (err) {
+        work.error = (err as Error).message;
       }
       render();
     },
@@ -2017,6 +2447,11 @@ export function renderGame(root: HTMLElement, companyId: string, onLeave: () => 
   });
   root.addEventListener('input', (event) => {
     const input = event.target as HTMLInputElement;
+    const teamField = input.dataset?.teamField;
+    if (teamField && modal?.type === 'files' && modal.draft.team) {
+      if (teamField === 'name') modal.draft.team.name = input.value;
+      if (teamField === 'purpose') modal.draft.team.purpose = input.value;
+    }
     const key = input.dataset?.criterion;
     if (key && modal?.type === 'order') {
       const criterion = modal.draft.criteria.find((c) => c.key === key);
@@ -2114,6 +2549,24 @@ export function renderGame(root: HTMLElement, companyId: string, onLeave: () => 
         return;
       }
     }
+    // Kamera drehen und Wände schalten geht im ganzen Büro.
+    if (!modal && !typing && !outside && !event.metaKey && !event.ctrlKey && !event.altKey) {
+      if (event.key === ',' || event.key === '.') {
+        event.preventDefault();
+        turnCamera(event.key === '.' ? 1 : -1);
+        return;
+      }
+      if (event.key.toLowerCase() === 'v') {
+        event.preventDefault();
+        setWallMode(wallMode === 'up' ? 'cut' : wallMode === 'cut' ? 'down' : 'up');
+        return;
+      }
+      if (event.key.toLowerCase() === 'e' && tab === 'bauen') {
+        event.preventDefault();
+        startPipette();
+        return;
+      }
+    }
     // Im Bau-Modus läuft alles über die Tastatur. Der Fokus auf einem Knopf darf Enter nicht abfangen.
     if (build && !modal && !typing && !event.metaKey && !event.ctrlKey) {
       const key = event.key.toLowerCase();
@@ -2135,11 +2588,23 @@ export function renderGame(root: HTMLElement, companyId: string, onLeave: () => 
     if (modal) {
       modal = null;
       render();
-    } else if (build || roomMode || paintColor) {
+    } else if (build || roomMode || paintColor || pipette) {
       cancelBuild();
     }
   };
   window.addEventListener('keydown', onKey);
+  // Sondertasten beim Bauen: Umschalt füllt den Raum, Alt oder Cmd reißt ab. Die Vorschau zeigt es sofort.
+  const onMods = (event: KeyboardEvent | PointerEvent) => {
+    const shift = event.shiftKey;
+    const remove = event.altKey || event.metaKey;
+    if (shift === mods.shift && remove === mods.remove) return;
+    mods.shift = shift;
+    mods.remove = remove;
+    if (build) syncGhost();
+  };
+  window.addEventListener('keydown', onMods);
+  window.addEventListener('keyup', onMods);
+  window.addEventListener('pointerdown', onMods, true);
   els.backdrop.addEventListener('click', (event) => {
     if (event.target === els.backdrop) {
       modal = null;
@@ -2171,7 +2636,7 @@ export function renderGame(root: HTMLElement, companyId: string, onLeave: () => 
     else if (tab === 'team') panel = teamPanel(snap, selectedAgent, selectedDepartment);
     else if (tab === 'projekte') panel = projectsPanel(snap, selectedOrder, selectedMandate, files, folds, selectedNote, boardDepartment);
     else if (tab === 'finanzen') panel = financePanel(snap);
-    else if (tab === 'bauen') panel = buildPanel(snap, build?.kind ?? null, Boolean(build?.id), buildMessage, (build?.kind === 'department' || build?.kind === 'roomwalls') && build.anchor !== null, build?.inventoryId ?? null, confirmDelete, viewFloor < 100, roomNaming(), wallsLow, paintColor);
+    else if (tab === 'bauen') panel = buildPanel(snap, build?.kind ?? null, Boolean(build?.id), buildMessage, (build?.kind === 'department' || build?.kind === 'roomwalls') && build.anchor !== null, build?.inventoryId ?? null, confirmDelete, viewFloor < 100, roomNaming(), wallMode, paintColor, { pipette, floorStyle: build?.kind === 'floor' ? (build.style ?? 'none') : null, level: build?.kind === 'level' ? build.level : null, camera: world.camera });
     if (panel) morph(els.panel, panel);
     // Eine neue Antwort soll sichtbar sein, ohne dass man erst danach suchen muss.
     const chatLength = snap.company.agents.find((a) => a.id === selectedAgent)?.chat.length ?? 0;
@@ -2206,8 +2671,11 @@ export function renderGame(root: HTMLElement, companyId: string, onLeave: () => 
     snap = next;
     disconnected = false;
     if (first) refreshProjectAgents();
-    world.setCompany(next.company);
+    // Erst das Guthaben, dann die Firma: So steht beim Öffnen gleich die richtige Tageszeit fest.
     world.setQuota(next.system.provider.billing === 'api' ? null : next.system.plan);
+    // Ohne Abo zeigt das KI-Budget die Tageszeit: je mehr verbraucht, desto später am Abend.
+    world.setBudgetUse(next.company.budgetEur > 0 ? 1 - next.money.remainingEur / next.company.budgetEur : next.money.remainingEur < 0 ? 1 : 0);
+    world.setCompany(next.company);
     town.setCompany(next.company);
     for (const notice of next.company.notices) {
       if (seenNotices.has(notice.id)) continue;
@@ -2233,6 +2701,9 @@ export function renderGame(root: HTMLElement, companyId: string, onLeave: () => 
   return () => {
     source.close();
     window.removeEventListener('keydown', onKey);
+    window.removeEventListener('keydown', onMods);
+    window.removeEventListener('keyup', onMods);
+    window.removeEventListener('pointerdown', onMods, true);
     window.removeEventListener('pointermove', onDragMove);
     window.removeEventListener('pointerup', onDragEnd);
     window.removeEventListener('keydown', onDragKey);

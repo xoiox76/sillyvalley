@@ -209,6 +209,25 @@ Standard ist Englisch, in den Einstellungen und auf der Startseite lässt sich D
 
 Wer lokal angemeldet ist, arbeitet mit dem eigenen Abo: Anthropic über die Claude-CLI, OpenAI über die Codex-CLI. API-Schlüssel sind die Option, in den Einstellungen auf dem Laptop. Bei der Codex-CLI sind Shell und Zusatzfunktionen abgeschaltet, Dateien gehen nur über `server/providers/files-mcp.ts`. Meldet ein Anthropic-Abo sein Kontingent als leer, gehen seine Mitarbeiter heim und kommen zur Rücksetzzeit wieder; wartende Arbeit läuft dann von selbst weiter.
 
+## Tageszeit und Heimwege
+
+Die Tageszeit im Büro zeigt, wie viel vom Nutzungsguthaben verbraucht ist: das Abo-Kontingent, wenn eines gemeldet ist, sonst das KI-Budget (`shared/quota.ts`).
+
+| Verbrauch | Tageszeit |
+|---|---|
+| 0 bis 30 % | heller Tag |
+| 31 bis 50 % | Nachmittag |
+| 51 bis 65 % | später Nachmittag |
+| 65 bis 90 % | früher Abend |
+| 90 bis 98 % | Spätabend |
+| ab 98 % | Nacht |
+
+Das Licht wird innerhalb jeder Stufe stetig dunkler und gleitet über etwa zwölf Sekunden zum neuen Stand. Mit der Dämmerung gehen Lampen, Lichterketten und Bildschirme an; Bildschirme, an denen ein Lauf arbeitet, leuchten heller.
+
+Ab 99 % ist Feierabend. Wer gerade keinen Lauf hat, geht zur Haustür hinaus und nach Hause (`client/world/commute.ts`). Jeder Mitarbeiter hat ein eigenes Wohnhaus in der Stadt; ein neuer bekommt beim Einstellen ein neues (`Agent.homeParcelId`, `shared/commute.ts`). Liegt das Haus mehr als 40 Felder entfernt, steht sein Auto tagsüber auf einem Parkplatz vor dem Büro: Er geht hin und fährt auf der Straße heim, das Auto parkt dann vor seinem Haus. Näher Wohnende gehen zu Fuß. Wird es wieder Tag, kommen alle auf demselben Weg zurück. Wer das Büro bei Nacht öffnet, findet alle schon daheim.
+
+Zum Ausprobieren gibt `?nutzung=0.8` in der Adresse den Verbrauch vor.
+
 ## Das Büro in der Stadt
 
 Die Haustür liegt in der Wand zur Strasse, ein Weg führt zum Gehweg. Ein Klick auf die Tür lässt die Figur hinlaufen, dann steht sie in der Stadt. Zurück führt ein Klick auf die Tür des eigenen Hauses. Rund ums Büro liegt die echte Stadt, ausgerichtet auf das Grundstück der Firma. Das eigene Grundstück ist so scharf wie das Büro; Nachbarhäuser davor werden nach dem Büro gezeichnet und verdecken es, wo sie wirklich davor stehen.
@@ -233,6 +252,12 @@ Dieselbe Liste steht im Spiel auf dem Laptop unter **Tastenkürzel**.
 | Bau-Modus | `R`, Rechtsklick | drehen |
 | Bau-Modus | `I` | ins Inventar |
 | Bau-Modus | `Entf`, Rücktaste | löschen, ein zweiter Druck bestätigt |
+| Bau-Modus | Ziehen mit gedrückter Maus | Wände, Räume, Boden und Podeste aufziehen |
+| Bau-Modus | `Alt` oder `Cmd` beim Ziehen | einen Wandzug abreißen |
+| Bau-Modus | `Umschalt` | ganzen Raum füllen oder streichen, Werkzeug behalten |
+| Bau-Modus | `E` | Pipette |
+| Büro | `V` | Wände hoch, Schnitt, unten |
+| Büro | `,` `.` | Kamera drehen |
 | Überall | `Esc` | abbrechen, Fenster schliessen; im Browser des Laptops zurück |
 | Mac-App | `Cmd+R`, `Cmd+F`, `Cmd+M`, `Cmd+H` | neu laden, Vollbild, ins Dock, ausblenden |
 | Mac-App | `Cmd+W`, `Cmd+Q` | beenden |
@@ -254,6 +279,23 @@ Aus dem Inventar neu platzieren kostet nichts, Löschen erstattet nichts. Der Sc
 offenen Besprechung lassen sich verschieben, aber nicht entfernen. Was schon im Raum stand, lässt sich nicht drehen und
 nicht nachkaufen. Beim Umzug kommt es ins Inventar, ebenso alles, was im neuen Raum keinen Platz findet. Die Richtung hat
 Folgen: Beim Schreibtisch sitzt die Figur anders, beim Besprechungsraum wandert die Tür.
+
+## Bauen wie in einem Bauspiel
+
+- **Wände** zieht man mit gedrückter Maus über viele Felder. Es gibt Wand, Halbwand, Geländer, Glaswand, Fensterwand und Säule. Halbwand und Geländer versperren den Weg, trennen aber keine Räume.
+- **Türen und Fenster** setzen sich in eine stehende Wand und ersetzen dort das Stück; ein Fenster übernimmt den Anstrich. Durch Glas sieht man hindurch.
+- **Wandansichten** (`V`): Hoch, Schnitt, Unten. Im Schnitt, der Grundeinstellung, stehen Innenwände in voller Höhe, aber nur Sockel und obere Leiste decken, dazwischen ist die Wand gerastert durchsichtig. Unten senkt auch die Außenwände.
+- **Anstrich** gilt je Wandseite, mit `Umschalt` für alle Wände eines Raums.
+- **Boden** liegt Feld für Feld (`Company.floorPaint`), 8 Beläge, mit `Umschalt` für den ganzen Raum.
+- **Podeste** heben Felder um bis zu drei Stufen (`Company.floorHeight`). Zwei Ebenen verbinden nur Stufen; ein Podest wird abgelehnt, wenn danach ein Arbeitsplatz nicht mehr erreichbar wäre.
+- **Wanddeko**: Bild, Wandlampe, Wandregal, Uhr hängen an einer Wandseite. Fällt die Wand, kommen sie ins Inventar.
+- **Pipette** (`E`) nimmt ein Möbel, eine Wandfarbe oder einen Boden auf.
+- **Kamera** dreht in Vierteldrehungen (`,` `.`). Gespeichert wird immer in Weltkoordinaten, gezeichnet in Ansichtskoordinaten (`client/world/camera.ts`). Gedreht steht das Haus ohne Stadt auf einer Insel.
+- Figuren suchen ihren Weg neu, sobald etwas im Weg steht, und gehen nie durch Wände oder Möbel. Wer frei oder fertig ist, sitzt meist am Platz.
+
+## Grafik
+
+Das Büro wird in doppelter Auflösung gezeichnet: Ein Feld ist 64 × 32 Pixel (`RES` in `client/world/art.ts`). Maße bleiben in alten Pixeln, der Stift (`Pen` in `client/world/pixel.ts`) zeichnet sie feiner. Er kennt Quader mit fünfstufigen Farbrampen und eigener Oberfläche (`tbox`), Zylinder, Kugeln und Stäbe. Figuren sind 48 × 72 Pixel groß, aus Formen gefüllt und quer schattiert (`client/world/figures.ts`). Das Kinderzimmer hat Backstein, dunkle Dielen, ein Fenster mit Stadtblick und eine Lichterkette. Die Stadt wird noch in einfacher Auflösung gezeichnet und vergrößert eingesetzt.
 
 ## Du im Spiel
 
@@ -340,7 +382,7 @@ server/
   providers/     Anbieter-Schnittstelle und Claude-CLI-Adapter
   http.ts        API und abgeschotteter Ergebnis-Server
 client/
-  world/         Pixel-Rasterung, Möbel, Figuren, Räume, Spielwelt
+  world/         Pixel-Rasterung, Möbel, Figuren, Räume, Spielwelt, Kamera (camera.ts), Heimwege (commute.ts)
   ui/            Oberfläche als Vorlagen, DOM-Abgleich
 test/            Regeltests, HTTP-Sicherheit, Echtbeweis
 ```

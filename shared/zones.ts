@@ -1,6 +1,6 @@
 // Zonen: Räume aus Wänden und Türen, denen der Spieler einen Zweck und einen Namen gibt.
 import { floorOf, itemsOnFloor, roomOf } from './building.ts';
-import { blockedSet, meetingSeats, regionOf, type Seat, type Tile } from './layout.ts';
+import { FLAT, blockedSet, meetingSeats, regionOf, type Heights, type Seat, type Tile } from './layout.ts';
 import type { Company, FloorStyle, PlacedItem, Zone, ZoneKind } from './types.ts';
 
 type ZoneCompany = Pick<Company, 'locationId' | 'town' | 'placed' | 'zones'>;
@@ -23,7 +23,61 @@ export const FLOOR_STYLES: { style: FloorStyle; title: string }[] = [
   { style: 'teppich', title: 'Teppich' },
   { style: 'fliesen', title: 'Fliesen' },
   { style: 'beton', title: 'Beton' },
+  { style: 'parkett', title: 'Parkett' },
+  { style: 'marmor', title: 'Marmor' },
+  { style: 'teppichRot', title: 'Roter Teppich' },
+  { style: 'linoleum', title: 'Linoleum' },
 ];
+
+const paintKey = (floor: number, t: Tile) => `${floor}:${t.i},${t.j}`;
+
+/** Der Boden eines Feldes: erst der einzeln verlegte, dann der des benannten Raums. undefined: der Boden des Hauses. */
+export function floorStyleAt(company: Pick<Company, 'floorPaint'>, floor: number, tile: Tile): FloorStyle | undefined {
+  return company.floorPaint?.[paintKey(floor, tile)];
+}
+
+/** Verlegt einen Belag auf Feldern. null nimmt ihn wieder weg. */
+export function paintFloorTiles(company: Pick<Company, 'floorPaint'>, floor: number, tiles: Tile[], style: FloorStyle | null): void {
+  const paint = { ...(company.floorPaint ?? {}) };
+  for (const t of tiles) {
+    if (style) paint[paintKey(floor, t)] = style;
+    else delete paint[paintKey(floor, t)];
+  }
+  company.floorPaint = paint;
+}
+
+/** Höhe eines Feldes in Stufen. */
+export function heightAt(company: Pick<Company, 'floorHeight'>, floor: number, tile: Tile): number {
+  return company.floorHeight?.[paintKey(floor, tile)] ?? 0;
+}
+
+/** Die Höhen einer Etage als Funktion. Ohne Podeste flach. */
+export function heightsOf(company: Pick<Company, 'floorHeight'>, floor: number): Heights {
+  const prefix = `${floor}:`;
+  if (!Object.keys(company.floorHeight ?? {}).some((k) => k.startsWith(prefix))) return FLAT;
+  return (t) => heightAt(company, floor, t);
+}
+
+/** Setzt Felder auf eine Höhe. 0 entfernt das Podest. */
+export function setTileHeights(company: Pick<Company, 'floorHeight'>, floor: number, tiles: Tile[], level: number): void {
+  const next = { ...(company.floorHeight ?? {}) };
+  for (const t of tiles) {
+    if (level) next[paintKey(floor, t)] = level;
+    else delete next[paintKey(floor, t)];
+  }
+  company.floorHeight = next;
+}
+
+/** Alle einzeln verlegten Felder einer Etage. */
+export function paintedTiles(company: Pick<Company, 'floorPaint'>, floor: number): { i: number; j: number; style: FloorStyle }[] {
+  const prefix = `${floor}:`;
+  return Object.entries(company.floorPaint ?? {})
+    .filter(([k]) => k.startsWith(prefix))
+    .map(([k, style]) => {
+      const [i, j] = k.slice(prefix.length).split(',').map(Number);
+      return { i, j, style };
+    });
+}
 
 /** Wohin freie Agenten gern gehen, und woran sie sich dort aufhalten. */
 export const LOUNGE_SPOTS: Partial<Record<ZoneKind, string[]>> = { break: ['coffee', 'sofa', 'beanbag'], gaming: ['arcade', 'beanbag', 'sofa'] };

@@ -10,8 +10,9 @@ import path from 'node:path';
 import { DEFAULT_CEO, LOOK_OPTIONS, DEPARTMENT_COLORS, FURNITURE, LOCATIONS, isProp, staffOf, MODELS, ROLES, RULES, SKILLS, commandRisks, furnitureByKind, locationById, modelById, roleById, skillById, WALL_COLORS } from '../shared/catalog.ts';
 import type { Settings } from './settings.ts';
 import { byRank, openSprint, productOwner, sprintCommitted, sprintPlanner, sprintRows } from '../shared/scrum.ts';
-import { checkDepartment, checkPlacement, deskDepartment, inBounds, isEdgeKind } from '../shared/layout.ts';
-import { FLOOR_STYLES, ZONE_KINDS, isSeparateRoom, meetingRooms, zoneAt } from '../shared/zones.ts';
+import { MAX_LEVEL, checkDepartment, checkPlacement, deskDepartment, inBounds, isEdgeKind, isWallHung, replacesWall } from '../shared/layout.ts';
+import { homesOf } from '../shared/commute.ts';
+import { FLOOR_STYLES, ZONE_KINDS, heightsOf, isSeparateRoom, meetingRooms, paintFloorTiles, setTileHeights, zoneAt } from '../shared/zones.ts';
 import { BUSINESS_CASE_FILE, VISION_FILE, businessCaseHolds, businessCaseMarkdown, cleanBusinessCase, cleanVision, visionMarkdown } from '../shared/vision.ts';
 import { SITE_STEP, baseFloorOf, siteAt, storeyOf, buildLimits, buildingAt, checkShaft, floorOf, isShaft, itemsOnFloor, roomAt, roomOf, shaftLanding } from '../shared/building.ts';
 import { CITIES, HOME_ROOMS, parcelById, parcelOfLocation, placeById, startTown, teamFor, teamForFloor, teamSize } from '../shared/town.ts';
@@ -19,7 +20,7 @@ import type {
   CompanyRepo, OrderGit,
   Sprint,
   Agent, AgentLive, AgentOrigin, BoardItem, Building, CommandRequest, HelpRequest, Shaft, Company, CompanyRole, CompanySummary, Contract, Criterion, CustomSkill, Department, FurnitureKind, Job, Fx, LiveKind, Look, LocationId, Mandate, Meeting, Money,
-  Order, PlacedItem, PlanStatus, Pool, ProjectAgent, Proposal, ProviderInfo, Rotation, Run, RunKind, Snapshot, Stage, StageKind, SystemInfo, Team, Verdict, Zone, ZoneKind,
+  Order, PlacedItem, PlanStatus, Pool, ProjectAgent, Proposal, ProviderInfo, Rotation, Run, RunKind, Snapshot, Stage, StageKind, SystemInfo, Team, TeamRole, Verdict, Zone, ZoneKind,
 } from '../shared/types.ts';
 import { emptyUsage } from '../shared/types.ts';
 import type { FxSource } from './fx.ts';
@@ -906,6 +907,7 @@ export class Engine {
     if (company.helps.some((h) => (h.fromId === agent.id || h.toId === agent.id) && (h.status === 'queued' || h.status === 'running'))) throw open('Ein Gespräch mit einem Kollegen läuft noch.');
     for (const team of company.teams) {
       team.memberIds = team.memberIds.filter((id) => id !== agent.id);
+      for (const role of team.roles ?? []) role.memberIds = role.memberIds.filter((id) => id !== agent.id);
       if (team.leadId === agent.id) team.leadId = null;
     }
     agent.firedAt = Date.now();
@@ -1014,20 +1016,41 @@ export class Engine {
     return team;
   }
 
-  private checkTeam(company: Company, input: { name?: string; purpose?: string; memberIds?: string[]; leadId?: string | null }, ownId?: string): Pick<Team, 'name' | 'purpose' | 'memberIds' | 'leadId'> {
+  private checkTeam(company: Company, input: TeamInput, ownId?: string): Pick<Team, 'name' | 'purpose' | 'memberIds' | 'leadId' | 'roles'> {
     const name = input.name?.trim();
     if (!name) throw new GameError('Gib dem Team einen Namen.');
     if (name.length > 40) throw new GameError('Der Teamname darf höchstens 40 Zeichen lang sein.');
     if (company.teams.some((t) => t.id !== ownId && t.name.toLowerCase() === name.toLowerCase())) throw new GameError(`Das Team "${name}" gibt es schon.`);
-    const memberIds = [...new Set(input.memberIds ?? [])];
+    const roles = this.checkTeamRoles(company, input.roles);
+    // Wer eine Rolle im Team hat, gehört dazu, auch ohne eigene Nennung.
+    const memberIds = [...new Set([...(input.memberIds ?? []), ...roles.flatMap((r) => r.memberIds)])];
     if (!memberIds.length) throw new GameError('Ein Team braucht mindestens eine Person.');
     for (const id of memberIds) this.hiredAgent(company, id);
     const leadId = input.leadId || null;
     if (leadId && !memberIds.includes(leadId)) throw new GameError('Die Teamleitung muss zum Team gehören.');
-    return { name, purpose: input.purpose?.trim().slice(0, RULES.jobTextMax) ?? '', memberIds, leadId };
+    return { name, purpose: input.purpose?.trim().slice(0, RULES.jobTextMax) ?? '', memberIds, leadId, roles };
   }
 
-  createTeam(companyId: string, input: { name: string; purpose?: string; memberIds: string[]; leadId?: string | null }): Team {
+  private checkTeamRoles(company: Company, input: unknown): TeamRole[] {
+    if (!Array.isArray(input)) return [];
+    if (input.length > 12) throw new GameError('Ein Team hat höchstens 12 Rollen.');
+    const roles: TeamRole[] = [];
+    for (const raw of input as Partial<TeamRole>[]) {
+      if (!raw || typeof raw !== 'object') continue;
+      const base = company.roles.find((r) => r.id === raw.companyRoleId) ?? null;
+      const title = (typeof raw.title === 'string' ? raw.title.trim() : '') || base?.title || '';
+      if (!title) throw new GameError('Jede Rolle im Team braucht einen Titel.');
+      if (title.length > 60) throw new GameError('Ein Rollentitel darf höchstens 60 Zeichen lang sein.');
+      if (roles.some((r) => r.title.toLowerCase() === title.toLowerCase())) throw new GameError(`Die Rolle "${title}" steht schon im Team.`);
+      const memberIds = [...new Set(Array.isArray(raw.memberIds) ? raw.memberIds.filter((id): id is string => typeof id === 'string') : [])];
+      for (const id of memberIds) this.hiredAgent(company, id);
+      const id = typeof raw.id === 'string' && /^tr[\w-]{1,20}$/.test(raw.id) ? raw.id : `tr${shortId()}`;
+      roles.push({ id, title, companyRoleId: base?.id ?? null, memberIds });
+    }
+    return roles;
+  }
+
+  createTeam(companyId: string, input: TeamInput): Team {
     const company = this.require(companyId);
     const team: Team = { id: `t${shortId()}`, ...this.checkTeam(company, input), createdAt: Date.now() };
     company.teams.push(team);
@@ -1035,12 +1058,14 @@ export class Engine {
     return team;
   }
 
-  updateTeam(companyId: string, teamId: string, input: { name?: string; purpose?: string; memberIds?: string[]; leadId?: string | null }): void {
+  updateTeam(companyId: string, teamId: string, input: TeamInput): void {
     const company = this.require(companyId);
     const team = this.teamOf(company, teamId);
-    // Wer das Team verlässt, gibt auch die Leitung ab. Nur eine ausdrücklich falsche Wahl ist ein Fehler.
-    const keptLead = team.leadId && (input.memberIds ?? team.memberIds).includes(team.leadId) ? team.leadId : null;
-    Object.assign(team, this.checkTeam(company, { name: team.name, purpose: team.purpose, memberIds: team.memberIds, leadId: keptLead, ...input }, team.id));
+    // Wer das Team verlässt, gibt auch Leitung und Rollen ab. Nur eine ausdrücklich falsche Wahl ist ein Fehler.
+    const stays = input.memberIds ?? team.memberIds;
+    const keptLead = team.leadId && stays.includes(team.leadId) ? team.leadId : null;
+    const keptRoles = input.roles ?? (team.roles ?? []).map((r) => ({ ...r, memberIds: r.memberIds.filter((id) => stays.includes(id)) }));
+    Object.assign(team, this.checkTeam(company, { name: team.name, purpose: team.purpose, memberIds: team.memberIds, leadId: keptLead, ...input, roles: keptRoles }, team.id));
     this.touch(company);
   }
 
@@ -2374,7 +2399,13 @@ export class Engine {
         : '',
       teamNote: (() => {
         const t = company.teams.find((x) => x.id === mandate.teamId);
-        return t ? `Die Firmenleitung hat dieses Projekt dem Team "${t.name}" gegeben.${t.purpose ? ` Sein Zweck: ${t.purpose}` : ''}` : '';
+        if (!t) return '';
+        const names = (ids: string[]) => ids.map((id) => company.agents.find((a) => a.id === id)?.name).filter(Boolean).join(', ');
+        const roles = (t.roles ?? []).map((r) => `${r.title}: ${names(r.memberIds) || 'noch unbesetzt'}`);
+        return [
+          `Die Firmenleitung hat dieses Projekt dem Team "${t.name}" gegeben.${t.purpose ? ` Sein Zweck: ${t.purpose}` : ''}`,
+          roles.length ? `Rollen im Team, verteile die Arbeit danach:\n${roles.map((line) => `- ${line}`).join('\n')}` : '',
+        ].filter(Boolean).join('\n');
       })(),
     });
     mandate.status = 'planning';
@@ -2716,13 +2747,29 @@ export class Engine {
     assertRotation(input.rot);
     const rot = input.rot;
     const floor = this.checkFloor(company, input.floor);
-    const check = checkPlacement(roomOf(company, floor), itemsOnFloor(company.placed, floor), { kind, i: input.i, j: input.j, rot });
+    const check = checkPlacement(roomOf(company, floor), itemsOnFloor(company.placed, floor), { kind, i: input.i, j: input.j, rot }, heightsOf(company, floor));
     if (!check.ok) throw new GameError(check.reason);
     const item: PlacedItem = { id: stored?.id ?? shortId(), kind, i: input.i, j: input.j, rot, ...(floor ? { floor } : {}) };
+    this.replaceWall(company, item);
     company.placed.push(item);
     if (stored) company.inventory = company.inventory.filter((s) => s !== stored);
     this.touch(company);
     return item;
+  }
+
+  /** Eine Tür oder ein Fenster in einer stehenden Wand ersetzt dieses Wandstück. Der Anstrich bleibt. */
+  private replaceWall(company: Company, item: PlacedItem): void {
+    if (!replacesWall(item.kind)) return;
+    const floor = floorOf(item);
+    const wall = company.placed.find((p) => p.kind === 'wall' && floorOf(p) === floor && p.i === item.i && p.j === item.j && p.rot % 2 === item.rot % 2);
+    if (!wall) return;
+    company.placed = company.placed.filter((p) => p !== wall);
+    // Was an der Wand hing, kommt ins Inventar. Ein Fenster übernimmt den Anstrich.
+    this.dropHung(company, wall);
+    if (item.kind === 'window') {
+      if (wall.color) item.color = wall.color;
+      if (wall.colorBack) item.colorBack = wall.colorBack;
+    }
   }
 
   /** Was gerade gebraucht wird, darf nicht aus dem Raum verschwinden. */
@@ -2742,6 +2789,7 @@ export class Engine {
     const item = this.removablePlaced(company, itemId);
     company.placed = company.placed.filter((p) => p !== item);
     company.inventory.push({ id: item.id, kind: item.kind, at: Date.now() });
+    this.dropHung(company, item);
     this.touch(company);
   }
 
@@ -2760,17 +2808,74 @@ export class Engine {
     this.touch(company);
   }
 
-  /** Eine Wand oder Fensterwand anstreichen. */
-  paintItem(companyId: string, itemId: string, input: { color: string }): void {
+  /** Eine Wand, Halbwand oder Fensterwand anstreichen. Ohne Seite beide, sonst die vordere (höheres i oder j) oder die hintere. */
+  paintItem(companyId: string, itemId: string, input: { color: string; side?: 'front' | 'back' }): void {
     const company = this.require(companyId);
     const item = company.placed.find((p) => p.id === itemId);
     if (!item) throw new GameError('Dieses Möbelstück gibt es nicht.', 404);
-    if (item.kind !== 'wall' && item.kind !== 'window') throw new GameError('Anstreichen kannst du Wände und Fensterwände.');
+    if (item.kind !== 'wall' && item.kind !== 'window' && item.kind !== 'half') throw new GameError('Anstreichen kannst du Wände, Halbwände und Fensterwände.');
     const color = WALL_COLORS.find((c) => c.id === input?.color);
     if (!color) throw new GameError('Diese Farbe gibt es nicht.');
-    if (color.id === WALL_COLORS[0].id) delete item.color;
-    else item.color = color.id;
+    const side = input?.side;
+    if (side && side !== 'front' && side !== 'back') throw new GameError('Eine Wand hat eine vordere und eine hintere Seite.');
+    const front = item.color ?? WALL_COLORS[0].id;
+    const back = item.colorBack ?? front;
+    const next = { front: side === 'back' ? front : color.id, back: side === 'front' ? back : color.id };
+    if (next.front === WALL_COLORS[0].id) delete item.color;
+    else item.color = next.front;
+    if (next.back === next.front) delete item.colorBack;
+    else item.colorBack = next.back;
     this.touch(company);
+  }
+
+  /** Bodenbelag Feld für Feld verlegen. style null nimmt den Belag wieder weg. */
+  paintFloor(companyId: string, input: { floor?: number; tiles: { i: number; j: number }[]; style: string | null }): void {
+    const company = this.require(companyId);
+    const floor = this.checkFloor(company, input?.floor);
+    const style = input?.style ? FLOOR_STYLES.find((f) => f.style === input.style)?.style : null;
+    if (input?.style && !style) throw new GameError('Diesen Bodenbelag gibt es nicht.');
+    const loc = roomOf(company, floor);
+    const tiles = Array.isArray(input?.tiles) ? input.tiles : [];
+    if (!tiles.length || tiles.length > loc.w * loc.d) throw new GameError('Wähle Felder im Raum.');
+    if (tiles.some((t) => !Number.isInteger(t?.i) || !Number.isInteger(t?.j) || !inBounds(loc, t))) throw new GameError('Das liegt nicht im Raum.');
+    paintFloorTiles(company, floor, tiles, style ?? null);
+    this.touch(company);
+  }
+
+  /**
+   * Podeste: Felder auf eine Höhenstufe setzen. Danach muss jeder Arbeitsplatz erreichbar bleiben,
+   * über Stufen, wenn zwei Ebenen aneinanderstoßen.
+   */
+  setLevel(companyId: string, input: { floor?: number; tiles: { i: number; j: number }[]; level: number }): void {
+    const company = this.require(companyId);
+    const floor = this.checkFloor(company, input?.floor);
+    const level = input?.level;
+    if (!Number.isInteger(level) || level < 0 || level > MAX_LEVEL) throw new GameError(`Ein Podest hat 0 bis ${MAX_LEVEL} Stufen.`);
+    const loc = roomOf(company, floor);
+    const tiles = Array.isArray(input?.tiles) ? input.tiles : [];
+    if (!tiles.length || tiles.length > loc.w * loc.d) throw new GameError('Wähle Felder im Raum.');
+    if (tiles.some((t) => !Number.isInteger(t?.i) || !Number.isInteger(t?.j) || !inBounds(loc, t))) throw new GameError('Das liegt nicht im Raum.');
+    if (level && tiles.some((t) => t.i === loc.door.i && t.j === loc.door.j)) throw new GameError('Der Eingang bleibt auf dem Boden.');
+    const before = company.floorHeight;
+    setTileHeights(company, floor, tiles, level);
+    const items = itemsOnFloor(company.placed, floor);
+    const probe = items.find((p) => !isEdgeKind(p.kind) && !isWallHung(p.kind));
+    const check = probe ? checkPlacement(loc, items, probe, heightsOf(company, floor)) : { ok: true, reason: '' };
+    if (!check.ok) {
+      company.floorHeight = before;
+      throw new GameError(check.reason);
+    }
+    this.touch(company);
+  }
+
+  /** Steht eine Wand nicht mehr, wandert, was an ihr hing, ins Inventar. */
+  private dropHung(company: Company, wall: PlacedItem): void {
+    if (wall.kind !== 'wall') return;
+    const floor = floorOf(wall);
+    const hung = company.placed.filter((p) => isWallHung(p.kind) && floorOf(p) === floor && p.i === wall.i && p.j === wall.j && p.rot % 2 === wall.rot % 2);
+    if (!hung.length) return;
+    company.placed = company.placed.filter((p) => !hung.includes(p));
+    company.inventory.push(...hung.map((p) => ({ id: p.id, kind: p.kind, at: Date.now() })));
   }
 
   /** Endgültig weg. */
@@ -2788,6 +2893,7 @@ export class Engine {
     } else {
       const item = this.removablePlaced(company, itemId);
       company.placed = company.placed.filter((p) => p !== item);
+      this.dropHung(company, item);
     }
     this.touch(company);
   }
@@ -2800,11 +2906,13 @@ export class Engine {
     if (company.meetings.some((m) => m.status === 'running' && m.roomId === itemId)) throw new GameError('In diesem Raum läuft gerade eine Besprechung.');
     if (isShaft(item.kind)) throw new GameError(`${furnitureByKind(item.kind).title} bleibt, wo sie ist.`);
     const floor = this.checkFloor(company, input.floor ?? floorOf(item));
-    const check = checkPlacement(roomOf(company, floor), itemsOnFloor(company.placed, floor), { ...item, i: input.i, j: input.j, rot: input.rot });
+    const check = checkPlacement(roomOf(company, floor), itemsOnFloor(company.placed, floor), { ...item, i: input.i, j: input.j, rot: input.rot }, heightsOf(company, floor));
     if (!check.ok) throw new GameError(check.reason);
+    if (item.i !== input.i || item.j !== input.j || item.rot % 2 !== input.rot % 2 || floor !== floorOf(item)) this.dropHung(company, item);
     Object.assign(item, { i: input.i, j: input.j, rot: input.rot });
     if (floor) item.floor = floor;
     else delete item.floor;
+    this.replaceWall(company, item);
     this.touch(company);
   }
 
@@ -3169,6 +3277,9 @@ export class Engine {
   private finishInterview(company: Company, agent: Agent, run: Run): void {
     if (run.status === 'success') {
       agent.hired = true;
+      // Wer neu anfängt, bekommt ein eigenes Haus in der Stadt.
+      const home = homesOf(company).get(agent.id);
+      if (home) agent.homeParcelId = home;
       agent.intro = run.text.trim();
       agent.chat.push({ at: Date.now(), from: 'agent', text: agent.intro, runId: run.id });
       this.setLive(agent, 'idle', 'frei', null);
@@ -3316,6 +3427,14 @@ const euro = (n: number) => `${n.toFixed(2).replace('.', ',')} €`;
 
 function assertRotation(rot: unknown): void {
   if (rot !== 0 && rot !== 1 && rot !== 2 && rot !== 3) throw new GameError('Ein Möbelstück lässt sich nur in vier Richtungen drehen.');
+}
+
+export interface TeamInput {
+  name?: string;
+  purpose?: string;
+  memberIds?: string[];
+  leadId?: string | null;
+  roles?: unknown;
 }
 
 export interface OrderTeam {

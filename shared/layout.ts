@@ -15,7 +15,7 @@ export const MEETING_SIZE = 4;
 
 export const footprint = (kind: FurnitureKind, rot: Rotation | number = 0): { w: number; d: number } => {
   // Wände und Türen liegen auf einer Kante und belegen kein Feld.
-  if (isEdgeKind(kind)) return { w: 0, d: 0 };
+  if (isEdgeKind(kind) || isWallHung(kind)) return { w: 0, d: 0 };
   if (kind === 'table') return { w: 2, d: 2 };
   const base = PROPS.find((p) => p.kind === kind) ?? (kind === 'desk' || kind === 'ceoDesk' ? { w: 2, d: 2 } : kind === 'meeting' ? { w: MEETING_SIZE, d: MEETING_SIZE } : { w: 1, d: 1 });
   return rot % 2 === 1 ? { w: base.d, d: base.w } : { w: base.w, d: base.d };
@@ -36,6 +36,8 @@ export function blockingTiles(item: Pick<PlacedItem, 'kind' | 'i' | 'j' | 'rot'>
     for (let a = 1; a < MEETING_SIZE - 1; a++) for (let b = 1; b < MEETING_SIZE - 1; b++) tiles.push({ i: item.i + a, j: item.j + b });
     return tiles;
   }
+  // Über Stufen geht man.
+  if (item.kind === 'steps') return [];
   if (item.kind !== 'desk' && item.kind !== 'ceoDesk') return occupiedTiles(item);
   switch (item.rot) {
     case 0:
@@ -111,7 +113,32 @@ export function meetingSeats(item: Pick<PlacedItem, 'i' | 'j' | 'rot'>): Seat[] 
 const edge = (a: Tile, b: Tile) => `${key(a)}>${key(b)}`;
 
 /** Wände und Türen sitzen auf Kanten zwischen zwei Feldern. */
-export const isEdgeKind = (kind: FurnitureKind | string) => kind === 'wall' || kind === 'door' || kind === 'window' || kind === 'glass';
+export const isEdgeKind = (kind: FurnitureKind | string) => kind === 'wall' || kind === 'door' || kind === 'window' || kind === 'glass' || kind === 'half' || kind === 'fence';
+
+/** Tür, Fenster und Glaswand setzen sich in eine stehende Wand und ersetzen dort dieses Stück. */
+export const replacesWall = (kind: FurnitureKind | string) => kind === 'door' || kind === 'window' || kind === 'glass';
+
+/** Halbwand und Geländer versperren den Weg, trennen aber keine Räume. */
+export const isLowEdge = (kind: FurnitureKind | string) => kind === 'half' || kind === 'fence';
+
+/** Bilder, Lampen, Wandregale und Uhren hängen an einer Wandseite. rot 0 und 1 zeigen zur Seite mit höherem j oder i, 2 und 3 zur anderen. */
+export const WALL_HUNG: readonly FurnitureKind[] = ['picture', 'wallLamp', 'wallShelf', 'clock'];
+export const isWallHung = (kind: FurnitureKind | string) => (WALL_HUNG as readonly string[]).includes(kind);
+
+/** Das Feld, zu dem ein Wandgegenstand zeigt. */
+export function hungFacing(item: Pick<PlacedItem, 'i' | 'j' | 'rot'>): Tile {
+  const [a, b] = wallSides(item);
+  return item.rot < 2 ? b : a;
+}
+
+/** Ob an dieser Kante eine Wand steht, an die man etwas hängen kann. Die hinteren Außenwände zählen mit. */
+export function hasWallAt(loc: Pick<LocationInfo, 'w' | 'd'>, items: Pick<PlacedItem, 'kind' | 'i' | 'j' | 'rot'>[], edge: Pick<PlacedItem, 'i' | 'j' | 'rot'>): boolean {
+  if (items.some((p) => p.kind === 'wall' && p.i === edge.i && p.j === edge.j && p.rot % 2 === edge.rot % 2)) return true;
+  // Die hinteren Außenwände gehören zum Haus. Behängen lässt sich nur ihre Innenseite.
+  if (edge.rot === 0) return edge.j === 0 && edge.i >= 0 && edge.i < loc.w;
+  if (edge.rot === 1) return edge.i === 0 && edge.j >= 0 && edge.j < loc.d;
+  return false;
+}
 
 /** Fenster dürfen auch in die beiden hinteren Außenwände. Die vorderen sind im Bild aufgeschnitten. */
 export function onBackWall(loc: Pick<LocationInfo, 'w' | 'd'>, edge: Pick<PlacedItem, 'kind' | 'i' | 'j' | 'rot'>): boolean {
@@ -159,7 +186,8 @@ export function blockedEdges(items: Pick<PlacedItem, 'kind' | 'i' | 'j' | 'rot'>
 
 /** Wände, Türen und Glaswände trennen Räume. Durch Türen kommt man durch, deshalb zählen sie nur hier. */
 export function roomEdges(items: Pick<PlacedItem, 'kind' | 'i' | 'j' | 'rot'>[]): Set<string> {
-  const edges = blockedEdges(items);
+  // Halbwände versperren den Weg, trennen aber keine Räume.
+  const edges = blockedEdges(items.filter((item) => !isLowEdge(item.kind)));
   for (const item of items) {
     if (item.kind !== 'door') continue;
     const [a, b] = wallSides(item);
@@ -201,6 +229,46 @@ const NEIGHBOURS = [
   [0, -1],
 ];
 
+/* ---------- Podeste ---------- */
+
+/** Höhe eines Feldes in Stufen. 0 ist der Boden. */
+export type Heights = (t: Tile) => number;
+export const FLAT: Heights = () => 0;
+export const MAX_LEVEL = 3;
+
+/** Wohin Stufen hinaufführen. Sie zählen wie Möbel: rot 0 nach +j, 1 nach +i, 2 nach -j, 3 nach -i. */
+export function stepsUp(item: Pick<PlacedItem, 'i' | 'j' | 'rot'>): Tile {
+  const [di, dj] = [[0, 1], [1, 0], [0, -1], [-1, 0]][item.rot];
+  return { i: item.i + di, j: item.j + dj };
+}
+
+/**
+ * Wo Höhen den Weg trennen: zwischen zwei Nachbarfeldern verschiedener Höhe. Stufen verbinden ihr Feld
+ * mit dem Feld eine Stufe höher, zu dem sie hinaufführen.
+ */
+export function heightEdges(loc: Pick<LocationInfo, 'w' | 'd'>, items: Pick<PlacedItem, 'kind' | 'i' | 'j' | 'rot'>[], height: Heights): Set<string> {
+  const out = new Set<string>();
+  if (height === FLAT) return out;
+  const steps = new Map(items.filter((p) => p.kind === 'steps').map((p) => [key(p), p]));
+  const climbs = (a: Tile, b: Tile) => {
+    const s = steps.get(key(a));
+    if (!s) return false;
+    const up = stepsUp(s);
+    return up.i === b.i && up.j === b.j && height(b) - height(a) === 1;
+  };
+  for (let i = 0; i < loc.w; i++) {
+    for (let j = 0; j < loc.d; j++) {
+      const t = { i, j };
+      for (const n of [{ i: i + 1, j }, { i, j: j + 1 }]) {
+        if (!inBounds(loc, n) || height(t) === height(n) || climbs(t, n) || climbs(n, t)) continue;
+        out.add(edge(t, n));
+        out.add(edge(n, t));
+      }
+    }
+  }
+  return out;
+}
+
 function reachableFrom(loc: LocationInfo, blocked: Set<string>, start: Tile, edges: Set<string>): Set<string> {
   const seen = new Set<string>([key(start)]);
   const queue = [start];
@@ -226,16 +294,24 @@ export function checkPlacement(
   loc: LocationInfo,
   items: PlacedItem[],
   candidate: { id?: string; kind: FurnitureKind; i: number; j: number; rot: Rotation },
+  height: Heights = FLAT,
 ): PlacementCheck {
-  const others = items.filter((x) => x.id !== candidate.id);
+  const others = items.filter((x) => x.id !== candidate.id && !(replacesWall(candidate.kind) && x.kind === 'wall' && x.i === candidate.i && x.j === candidate.j && x.rot % 2 === candidate.rot % 2));
   const tiles = occupiedTiles(candidate);
   if (tiles.some((t) => !inBounds(loc, t))) return { ok: false, reason: 'Das passt nicht in den Raum.' };
 
   if (isEdgeKind(candidate.kind)) {
     const [a, b] = wallSides(candidate);
     if ((!inBounds(loc, a) || !inBounds(loc, b)) && !onBackWall(loc, candidate)) return { ok: false, reason: 'Eine Wand steht zwischen zwei Feldern im Raum.' };
-    const same = others.find((o) => isEdgeKind(o.kind) && o.i === candidate.i && o.j === candidate.j && o.rot % 2 === candidate.rot % 2);
+    const same = others.find((o) => isEdgeKind(o.kind) && o.i === candidate.i && o.j === candidate.j && o.rot % 2 === candidate.rot % 2 && !(replacesWall(candidate.kind) && o.kind === 'wall'));
     if (same) return { ok: false, reason: same.kind === 'door' ? 'Hier ist schon eine Tür.' : 'Hier steht schon eine Wand.' };
+  }
+
+  if (isWallHung(candidate.kind)) {
+    if (!inBounds(loc, hungFacing(candidate))) return { ok: false, reason: 'Das hängt an der Innenseite einer Wand.' };
+    if (!hasWallAt(loc, others, candidate)) return { ok: false, reason: 'Das hängt an einer Wand. Hier steht keine.' };
+    if (others.some((o) => isWallHung(o.kind) && o.i === candidate.i && o.j === candidate.j && o.rot === candidate.rot)) return { ok: false, reason: 'Hier hängt schon etwas.' };
+    return { ok: true, reason: '' };
   }
 
   const taken = new Set<string>();
@@ -246,18 +322,28 @@ export function checkPlacement(
 
   const next: PlacedItem[] = [...others, { id: candidate.id ?? 'neu', ...candidate }];
   const blocked = blockedSet(loc, next);
-  const reach = reachableFrom(loc, blocked, loc.door, blockedEdges(next));
+  const edges = blockedEdges(next);
+  for (const e of heightEdges(loc, next, height)) edges.add(e);
+  const reach = reachableFrom(loc, blocked, loc.door, edges);
   if ((loc.keep ?? []).some((t) => !reach.has(key(t)))) return { ok: false, reason: 'Das versperrt den Weg zur Treppe.' };
   for (const item of next) {
     if (item.kind === 'desk' || item.kind === 'ceoDesk') {
-      if (!reach.has(key(seatOf(item).tile))) return { ok: false, reason: 'Das versperrt den Weg zu einem Arbeitsplatz.' };
+      if (!reach.has(key(seatOf(item).tile))) return { ok: false, reason: height === FLAT ? 'Das versperrt den Weg zu einem Arbeitsplatz.' : 'Das versperrt den Weg zu einem Arbeitsplatz. Stufen verbinden zwei Ebenen.' };
     } else if (item.kind === 'meeting') {
       if (!reach.has(key(meetingDoor(item).inside))) return { ok: false, reason: 'Die Tür wäre versperrt. Drehen legt fest, wo sie sitzt.' };
     } else if (isEdgeKind(item.kind)) {
       // Eine Wand ist nur eine Kante. Geprüft wird, dass alles weiter erreichbar bleibt.
       continue;
+    } else if (item.kind === 'steps' || isWallHung(item.kind)) {
+      // Über Stufen geht man, und was an der Wand hängt, steht nicht im Weg.
+      continue;
     } else if (item.kind !== 'plant') {
-      const open = NEIGHBOURS.some(([a, b]) => reach.has(key({ i: item.i + a, j: item.j + b })));
+      // Erreichbar ist ein Möbel, wenn irgendein Feld rund um seine Grundfläche erreichbar ist, nicht nur an seiner Ecke.
+      const own = new Set(occupiedTiles(item).map(key));
+      const open = occupiedTiles(item).some((t) => NEIGHBOURS.some(([a, b]) => {
+        const n = { i: t.i + a, j: t.j + b };
+        return !own.has(key(n)) && reach.has(key(n));
+      }));
       if (!open) return { ok: false, reason: 'Das wäre danach nicht mehr erreichbar.' };
     }
   }

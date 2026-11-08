@@ -6,7 +6,9 @@ import type { BusinessCase, ProductVision } from './vision.ts';
 export type LocationId = 'kinderzimmer' | 'garage' | 'eckladen' | 'coworking' | 'buero' | 'fabrik' | 'kino' | 'neubau-klein' | 'neubau-mittel' | 'neubau-gross';
 /** Was schon im Raum steht, wenn man einzieht. Es lässt sich verschieben, aber nicht kaufen. */
 export type PropKind = 'stairs' | 'lift' | 'bed' | 'toybox' | 'desk-kid' | 'workbench' | 'boxes' | 'tires' | 'lockers' | 'sofa';
-export type FurnitureKind = 'ceoDesk' | 'desk' | 'shelf' | 'coffee' | 'plant' | 'meeting' | 'wall' | 'door' | 'window' | 'glass' | 'table' | 'board' | 'arcade' | 'beanbag' | PropKind;
+export type FurnitureKind = 'ceoDesk' | 'desk' | 'shelf' | 'coffee' | 'plant' | 'meeting' | 'wall' | 'door' | 'window' | 'glass' | 'table' | 'board' | 'arcade' | 'beanbag' | 'half' | 'column' | 'fence' | 'steps' | WallHungKind | PropKind;
+/** Was an einer Wand hängt: Es sitzt auf einer Kante und zeigt zu einer ihrer beiden Seiten. */
+export type WallHungKind = 'picture' | 'wallLamp' | 'wallShelf' | 'clock';
 
 /** Ein Agent fragt einen Kollegen um Hilfe. Das sind zwei echte Läufe mit echtem Verbrauch, kein Bild. */
 export interface HelpRequest {
@@ -66,8 +68,10 @@ export interface PlacedItem {
   rot: Rotation;
   /** Die Etage. Fehlt sie, steht der Gegenstand im Erdgeschoss. */
   floor?: number;
-  /** Anstrich einer Wand oder Fensterwand. Fehlt er, ist sie weiß. */
+  /** Anstrich einer Wand oder Fensterwand. Fehlt er, ist sie weiß. Bei Wänden gilt er für die Seite zu höherem i oder j. */
   color?: string;
+  /** Anstrich der anderen Wandseite. Fehlt er, gilt color auch hier. */
+  colorBack?: string;
 }
 
 /** Was ein Agent gerade tatsächlich tut. Wird ausschließlich aus Ereignissen des Agenten-Prozesses abgeleitet. */
@@ -188,7 +192,17 @@ export interface Team {
   memberIds: string[];
   /** Wer Aufgaben an das Team entgegennimmt und im Team verteilt. null: Der Mensch wählt es bei jeder Aufgabe. */
   leadId: string | null;
+  /** Die Rollen im Team und wer sie ausfüllt. Fehlt die Liste, hat das Team keine Rollen. */
+  roles?: TeamRole[];
   createdAt: number;
+}
+
+/** Eine Rolle innerhalb eines Teams. Sie kann auf einer Rolle der Firma beruhen oder nur einen Titel haben. */
+export interface TeamRole {
+  id: string;
+  title: string;
+  companyRoleId: string | null;
+  memberIds: string[];
 }
 
 /** Eine Rolle, wie die Geschäftsführung sie definiert: Stelle und Fähigkeiten, noch ohne Person. */
@@ -239,6 +253,8 @@ export interface Agent {
   sessionCostUsd: number;
   hiredAt: number;
   deskId: string;
+  /** Das Wohnhaus in der Stadt. Dorthin geht oder fährt die Person, wenn es Nacht wird. */
+  homeParcelId?: string;
   hired: boolean;
   /** Gekündigt: Die Person arbeitet nicht mehr hier. Der Eintrag bleibt, damit Verlauf und Kosten lesbar bleiben. */
   firedAt: number | null;
@@ -495,7 +511,7 @@ export interface Notice {
 /** Was in einem Raum geschieht. Ein Raum entsteht aus Wänden und Türen, die Zone gibt ihm Zweck und Namen. */
 export type ZoneKind = 'meeting' | 'break' | 'gaming' | 'lobby' | 'ceo' | 'other';
 
-export type FloorStyle = 'holz' | 'teppich' | 'fliesen' | 'beton';
+export type FloorStyle = 'holz' | 'teppich' | 'fliesen' | 'beton' | 'parkett' | 'marmor' | 'teppichRot' | 'linoleum';
 
 export interface Zone {
   id: string;
@@ -704,6 +720,10 @@ export interface Company {
   departments: Department[];
   /** Benannte Räume. Ältere Spielstände haben noch keine. */
   zones?: Zone[];
+  /** Bodenbelag Feld für Feld. Schlüssel "etage:i,j". Geht vor dem Boden eines benannten Raums. */
+  floorPaint?: Record<string, FloorStyle>;
+  /** Podeste: Höhenstufe eines Feldes, Schlüssel "etage:i,j". Fehlt sie, liegt das Feld auf dem Boden. */
+  floorHeight?: Record<string, number>;
   /** Wohin das Produkt soll. Optional. */
   vision?: ProductVision | null;
   /** Was es bringen soll und ab wann entschieden wird. Optional. */
